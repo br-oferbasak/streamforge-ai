@@ -87,13 +87,28 @@ Planned next:
 ### v0.2 Streaming + sinks
 - [x] Flink stream processor job + example (`stream-processor/`)
 - [x] MinIO/S3 sink with an output layout and naming conventions (`deploy/cdc-flink-minio-demo/feature-sink/`)
-- [ ] Iceberg sink support (optional)
+- [x] Iceberg sink support (optional)
 
 ### v0.3 Hardening + integrations
 - [ ] Schema evolution handling
 - [ ] Metrics and observability
 - [ ] Benchmark scenarios
 - [ ] Training-job integration example
+- [ ] Backfill / replay tooling for historical reprocessing
+- [ ] Data quality checks (basic validation + drift signals)
+- [ ] Cost/performance tuning guide (Flink, Kafka, MinIO, Iceberg)
+
+### v0.4 Lakehouse + governance
+- [ ] Iceberg-first sink mode (partitioning, compaction, snapshots)
+- [ ] Table/catalog integration (REST catalog or Hive Metastore)
+- [ ] Data lineage basics (job -> dataset -> feature artifacts)
+- [ ] Access patterns for offline/online features (example layouts)
+
+### v0.5 Platformization
+- [ ] Pipeline configuration as code (YAML) + validation
+- [ ] Simple control-plane API for starting/stopping pipelines
+- [ ] Web UI for demo environments (status, logs, artifacts)
+- [ ] Basic authn/authz for local multi-user demos
 
 ### Roadmap Links
 - GitHub issues: https://github.com/cchenax/streamforge-ai/issues
@@ -103,4 +118,3 @@ Planned next:
 - Contribution guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - Start a topic/track progress: https://github.com/cchenax/streamforge-ai/issues/new/choose
 - Open PRs to `main`: https://github.com/cchenax/streamforge-ai/pulls
-

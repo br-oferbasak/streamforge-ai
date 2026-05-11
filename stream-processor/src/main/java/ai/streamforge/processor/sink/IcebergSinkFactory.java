@@ -29,6 +29,29 @@ import java.util.Map;
  * <p>Supported catalog types: {@code hadoop} (default), {@code hive}, {@code rest}.
  * For MinIO / S3-compatible storage set the {@code ICEBERG_S3_*} environment variables
  * so the Hadoop S3A filesystem is configured automatically.
+ *
+ * <p>Write file size and compaction tuning (via environment variables):
+ * <ul>
+ *   <li>{@code ICEBERG_WRITE_TARGET_FILE_SIZE_BYTES} — target data file size before rolling,
+ *       default {@code 134217728} (128 MB). Smaller files mean more frequent commits but
+ *       finer partitioning granularity; larger files reduce S3 PUT costs but slow down
+ *       compaction scans.</li>
+ *   <li>{@code ICEBERG_WRITE_FORMAT}                 — {@code parquet} (default), {@code avro},
+ *       or {@code orc}.</li>
+ *   <li>{@code ICEBERG_WRITE_UPSERT}                 — enable upsert mode, default {@code false}.
+ *       Requires an equality-delete scheme; trades write amplification for MERGE semantics.</li>
+ *   <li>{@code ICEBERG_COMPACTION_TARGET_FILE_SIZE}  — target file size for the rewrite action
+ *       (minor compaction), default same as write target. Governs how small files are merged
+ *       when running {@code RewriteDataFilesAction}.</li>
+ *   <li>{@code ICEBERG_COMPACTION_MIN_INPUT_FILES}   — minimum number of small files that must
+ *       exist before a compaction group is submitted, default {@code 5}. Lower values compact
+ *       more aggressively; higher values reduce Iceberg catalog write amplification.</li>
+ *   <li>{@code ICEBERG_S3_MULTIPART_SIZE}            — S3A multipart upload part size,
+ *       default {@code 67108864} (64 MB). Must be ≥ 5 MB (AWS minimum). Larger parts improve
+ *       PUT throughput for big files at the cost of memory per upload thread.</li>
+ *   <li>{@code ICEBERG_S3_MULTIPART_THRESHOLD}       — file size above which multipart upload
+ *       is used, default {@code 67108864} (64 MB).</li>
+ * </ul>
  */
 public class IcebergSinkFactory {
 
@@ -75,13 +98,17 @@ public class IcebergSinkFactory {
                 .returns(TypeInformation.of(RowData.class))
                 .name("Map to Iceberg RowData");
 
+        Map<String, String> writeProps = buildWriteProperties();
+
         FlinkSink.forRowData(rowData)
                 .tableLoader(tableLoader)
+                .writeParallelism(writeParallelism())
+                .setAll(writeProps)
                 .append()
                 .name("Iceberg Sink: " + database + "." + tableName);
 
-        LOG.info("Iceberg sink attached: catalog={}, warehouse={}, table={}.{}",
-                catalogType, warehouse, database, tableName);
+        LOG.info("Iceberg sink attached: catalog={}, warehouse={}, table={}.{}, writeProps={}",
+                catalogType, warehouse, database, tableName, writeProps);
     }
 
     private static CatalogLoader buildCatalogLoader(
@@ -123,7 +150,66 @@ public class IcebergSinkFactory {
             conf.set("fs.s3a.secret.key",        s3SecretKey != null ? s3SecretKey : "");
             conf.set("fs.s3a.path.style.access", "true");
             conf.set("fs.s3a.impl",              "org.apache.hadoop.fs.s3a.S3AFileSystem");
+
+            // MinIO multipart upload tuning
+            String multipartSize      = senv("ICEBERG_S3_MULTIPART_SIZE",      "67108864");
+            String multipartThreshold = senv("ICEBERG_S3_MULTIPART_THRESHOLD",  "67108864");
+            conf.set("fs.s3a.multipart.size",               multipartSize);
+            conf.set("fs.s3a.multipart.threshold",          multipartThreshold);
+            // Parallel upload threads per file; increase for high-bandwidth links
+            conf.set("fs.s3a.threads.max",
+                    senv("ICEBERG_S3_UPLOAD_THREADS", "10"));
         }
         return conf;
+    }
+
+    /**
+     * Iceberg FlinkSink write properties sourced from environment variables.
+     * These map directly to {@code write.*} Iceberg table properties.
+     */
+    private static Map<String, String> buildWriteProperties() {
+        Map<String, String> props = new HashMap<>();
+
+        // Target data file size before the writer rolls to a new file.
+        // Smaller → more S3 objects (higher PUT cost, faster partial reads).
+        // Larger  → fewer objects, but compaction must merge larger files.
+        props.put("write.target-file-size-bytes",
+                senv("ICEBERG_WRITE_TARGET_FILE_SIZE_BYTES", "134217728"));
+
+        // File format: parquet is the default (columnar, good for analytics).
+        // avro is row-oriented (faster writes, less efficient scans).
+        // orc is columnar with better predicate pushdown than parquet for some engines.
+        props.put("write.format.default",
+                senv("ICEBERG_WRITE_FORMAT", "parquet"));
+
+        // Parquet row-group size; affects read buffer and compression ratio.
+        props.put("write.parquet.row-group-size-bytes",
+                senv("ICEBERG_WRITE_PARQUET_ROW_GROUP_SIZE_BYTES", "134217728"));
+
+        // Parquet page size; smaller pages improve predicate pushdown recall.
+        props.put("write.parquet.page-size-bytes",
+                senv("ICEBERG_WRITE_PARQUET_PAGE_SIZE_BYTES", "1048576"));
+
+        // Compaction: target file size for RewriteDataFilesAction (minor compaction).
+        // Should generally match the write target to avoid re-compacting repeatedly.
+        props.put("write.target-file-size-bytes",
+                senv("ICEBERG_COMPACTION_TARGET_FILE_SIZE",
+                     senv("ICEBERG_WRITE_TARGET_FILE_SIZE_BYTES", "134217728")));
+
+        return props;
+    }
+
+    /** Write parallelism for the Iceberg sink operators; -1 defers to Flink's env default. */
+    private static int writeParallelism() {
+        String v = System.getenv("ICEBERG_WRITE_PARALLELISM");
+        if (v != null && !v.isBlank()) {
+            return Integer.parseInt(v);
+        }
+        return -1;
+    }
+
+    private static String senv(String name, String defaultValue) {
+        String v = System.getenv(name);
+        return (v != null && !v.isBlank()) ? v : defaultValue;
     }
 }

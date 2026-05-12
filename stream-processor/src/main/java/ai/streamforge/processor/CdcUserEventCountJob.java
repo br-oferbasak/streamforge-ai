@@ -67,20 +67,29 @@ import java.util.Properties;
  *   <li>{@code OUT_OF_ORDERNESS_SECONDS} — default {@code 5}</li>
  * </ul>
  *
- * <h3>Flink parallelism &amp; checkpointing</h3>
+ * <p>Flink parallelism and checkpointing knobs:
  * <ul>
- *   <li>{@code FLINK_PARALLELISM}              — default {@code -1} (cluster default)</li>
- *   <li>{@code CHECKPOINT_INTERVAL_MS}         — default {@code 30000}</li>
- *   <li>{@code CHECKPOINT_TIMEOUT_MS}          — default {@code 60000}</li>
- *   <li>{@code CHECKPOINT_MIN_PAUSE_MS}        — default {@code 0}</li>
- *   <li>{@code CHECKPOINT_MAX_CONCURRENT}      — default {@code 1}</li>
+ *   <li>{@code FLINK_PARALLELISM}              — operator parallelism, default {@code -1} (use cluster default)</li>
+ *   <li>{@code CHECKPOINT_INTERVAL_MS}         — checkpoint interval in ms, default {@code 30000}</li>
+ *   <li>{@code CHECKPOINT_TIMEOUT_MS}          — per-checkpoint timeout in ms, default {@code 60000}</li>
+ *   <li>{@code CHECKPOINT_MIN_PAUSE_MS}        — min pause between checkpoints in ms, default {@code 0}</li>
+ *   <li>{@code CHECKPOINT_MAX_CONCURRENT}      — max concurrent checkpoints, default {@code 1}</li>
  *   <li>{@code CHECKPOINT_MODE}                — {@code exactly_once} (default) or {@code at_least_once}</li>
- *   <li>{@code CHECKPOINT_UNALIGNED}           — default {@code false}</li>
- *   <li>{@code RESTART_ATTEMPTS}               — default {@code 3}</li>
- *   <li>{@code RESTART_DELAY_MS}               — default {@code 10000}</li>
+ *   <li>{@code CHECKPOINT_UNALIGNED}           — enable unaligned checkpoints, default {@code false}</li>
+ *   <li>{@code RESTART_ATTEMPTS}               — fixed-delay restart attempts, default {@code 3}</li>
+ *   <li>{@code RESTART_DELAY_MS}               — fixed-delay restart interval in ms, default {@code 10000}</li>
  * </ul>
  *
- * <h3>Iceberg (primary analytics sink)</h3>
+ * <p>Kafka producer tuning knobs (applied to the main sink and DLQ sink):
+ * <ul>
+ *   <li>{@code KAFKA_SINK_COMPRESSION}         — {@code none} (default), {@code snappy}, {@code lz4}, {@code zstd}, {@code gzip}</li>
+ *   <li>{@code KAFKA_SINK_BATCH_SIZE_BYTES}    — producer batch.size in bytes, default {@code 16384} (16 KB)</li>
+ *   <li>{@code KAFKA_SINK_LINGER_MS}           — producer linger.ms, default {@code 5}</li>
+ *   <li>{@code KAFKA_SINK_BUFFER_MEMORY_BYTES} — producer buffer.memory in bytes, default {@code 33554432} (32 MB)</li>
+ *   <li>{@code KAFKA_SINK_ACKS}                — producer acks, default {@code all}</li>
+ * </ul>
+ *
+ * <p>Optional Apache Iceberg sink (set {@code ICEBERG_ENABLED=true} to activate):
  * <ul>
  *   <li>{@code ICEBERG_ENABLED}       — default {@code true}; set {@code false} only for local dev</li>
  *   <li>{@code ICEBERG_CATALOG_TYPE}  — {@code hadoop} (default), {@code hive}, or {@code rest}</li>
@@ -97,7 +106,7 @@ public class CdcUserEventCountJob {
     private static final Logger LOG = LoggerFactory.getLogger(CdcUserEventCountJob.class);
 
     public static void main(String[] args) throws Exception {
-        // ── Kafka / window config ────────────────────────────────────────────
+        // ── Topic / group config ─────────────────────────────────────────────
         String bootstrapServers      = env("KAFKA_BOOTSTRAP_SERVERS",  "localhost:9092");
         String sourceTopic           = env("KAFKA_SOURCE_TOPIC",       "cdc.streamforge.user_events");
         String sinkTopic             = env("KAFKA_SINK_TOPIC",         "user.event.counts");
@@ -110,14 +119,27 @@ public class CdcUserEventCountJob {
         int parallelism = Integer.parseInt(env("FLINK_PARALLELISM", "-1"));
 
         // ── Checkpoint config ────────────────────────────────────────────────
-        long    ckptIntervalMs   = Long.parseLong(env("CHECKPOINT_INTERVAL_MS",    "30000"));
-        long    ckptTimeoutMs    = Long.parseLong(env("CHECKPOINT_TIMEOUT_MS",     "60000"));
-        long    ckptMinPauseMs   = Long.parseLong(env("CHECKPOINT_MIN_PAUSE_MS",   "0"));
-        int     maxConcurrentCkp = Integer.parseInt(env("CHECKPOINT_MAX_CONCURRENT", "1"));
-        boolean unaligned        = Boolean.parseBoolean(env("CHECKPOINT_UNALIGNED", "false"));
-        String  ckptModeStr      = env("CHECKPOINT_MODE", "exactly_once");
-        int     restartAttempts  = Integer.parseInt(env("RESTART_ATTEMPTS", "3"));
-        long    restartDelayMs   = Long.parseLong(env("RESTART_DELAY_MS",  "10000"));
+        long   checkpointIntervalMs   = Long.parseLong(env("CHECKPOINT_INTERVAL_MS",    "30000"));
+        long   checkpointTimeoutMs    = Long.parseLong(env("CHECKPOINT_TIMEOUT_MS",     "60000"));
+        long   checkpointMinPauseMs   = Long.parseLong(env("CHECKPOINT_MIN_PAUSE_MS",   "0"));
+        int    maxConcurrentCkpts     = Integer.parseInt(env("CHECKPOINT_MAX_CONCURRENT", "1"));
+        String checkpointModeStr      = env("CHECKPOINT_MODE",      "exactly_once");
+        boolean unalignedCheckpoints  = Boolean.parseBoolean(env("CHECKPOINT_UNALIGNED", "false"));
+        int    restartAttempts        = Integer.parseInt(env("RESTART_ATTEMPTS", "3"));
+        long   restartDelayMs         = Long.parseLong(env("RESTART_DELAY_MS",  "10000"));
+
+        // ── Kafka sink producer properties ───────────────────────────────────
+        Properties kafkaSinkProps = buildKafkaSinkProps();
+
+        LOG.info("Starting CdcUserEventCountJob: source={}, sink={}, dlq={}, window={}s, " +
+                 "parallelism={}, checkpoint={}ms mode={} unaligned={}, " +
+                 "compression={} batchSize={} lingerMs={}",
+                sourceTopic, sinkTopic, dlqTopic.isBlank() ? "disabled" : dlqTopic, windowSizeSeconds,
+                parallelism < 0 ? "cluster-default" : parallelism,
+                checkpointIntervalMs, checkpointModeStr, unalignedCheckpoints,
+                kafkaSinkProps.getProperty("compression.type", "none"),
+                kafkaSinkProps.getProperty("batch.size", "16384"),
+                kafkaSinkProps.getProperty("linger.ms", "5"));
 
         // ── Iceberg (first-class sink, enabled by default) ───────────────────
         boolean icebergEnabled = Boolean.parseBoolean(env("ICEBERG_ENABLED", "true"));
@@ -144,16 +166,18 @@ public class CdcUserEventCountJob {
             env.setParallelism(parallelism);
         }
 
-        CheckpointingMode ckptMode = "at_least_once".equalsIgnoreCase(ckptModeStr)
+        // ── Checkpointing ────────────────────────────────────────────────────
+        CheckpointingMode ckptMode = "at_least_once".equalsIgnoreCase(checkpointModeStr)
                 ? CheckpointingMode.AT_LEAST_ONCE
                 : CheckpointingMode.EXACTLY_ONCE;
 
-        env.enableCheckpointing(ckptIntervalMs, ckptMode);
+        env.enableCheckpointing(checkpointIntervalMs, ckptMode);
+
         CheckpointConfig ckptCfg = env.getCheckpointConfig();
-        ckptCfg.setCheckpointTimeout(ckptTimeoutMs);
-        ckptCfg.setMinPauseBetweenCheckpoints(ckptMinPauseMs);
-        ckptCfg.setMaxConcurrentCheckpoints(maxConcurrentCkp);
-        ckptCfg.enableUnalignedCheckpoints(unaligned);
+        ckptCfg.setCheckpointTimeout(checkpointTimeoutMs);
+        ckptCfg.setMinPauseBetweenCheckpoints(checkpointMinPauseMs);
+        ckptCfg.setMaxConcurrentCheckpoints(maxConcurrentCkpts);
+        ckptCfg.enableUnalignedCheckpoints(unalignedCheckpoints);
         ckptCfg.setExternalizedCheckpointCleanup(
                 CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 
@@ -281,16 +305,27 @@ public class CdcUserEventCountJob {
         return (v != null && !v.isBlank()) ? v : defaultValue;
     }
 
+    /**
+     * Builds Kafka producer properties from environment variables.
+     * These apply to both the main sink and the DLQ sink.
+     */
     private static Properties buildKafkaSinkProps() {
         Properties props = new Properties();
+
+        // Batching: larger batch + linger improves throughput at the cost of latency
         props.setProperty("batch.size",    env("KAFKA_SINK_BATCH_SIZE_BYTES",    "16384"));
         props.setProperty("linger.ms",     env("KAFKA_SINK_LINGER_MS",           "5"));
         props.setProperty("buffer.memory", env("KAFKA_SINK_BUFFER_MEMORY_BYTES", "33554432"));
-        props.setProperty("acks",          env("KAFKA_SINK_ACKS",                "all"));
+
+        // Compression: reduces network/disk I/O; snappy/lz4 best for throughput, zstd for ratio
         String compression = env("KAFKA_SINK_COMPRESSION", "none");
         if (!"none".equalsIgnoreCase(compression)) {
             props.setProperty("compression.type", compression);
         }
+
+        // Durability: "all" waits for all in-sync replicas; "1" or "0" for lower latency
+        props.setProperty("acks", env("KAFKA_SINK_ACKS", "all"));
+
         return props;
     }
 }

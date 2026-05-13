@@ -23,6 +23,7 @@ import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
@@ -30,13 +31,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.Properties;
 
 /**
- * Flink CDC aggregation job.
+ * Flink CDC aggregation job — primary entry point.
  *
- * Reads Debezium MySQL CDC events from Kafka, counts insert events per user
- * in tumbling event-time windows, and writes {@link UserEventCount} records
- * to an output Kafka topic.
+ * <p>Reads Debezium MySQL CDC events from Kafka, counts insert events per user
+ * in tumbling event-time windows, and writes {@link UserEventCount} to two sinks:
+ * <ol>
+ *   <li>Kafka ({@code user.event.counts}) — for real-time consumers.</li>
+ *   <li>Iceberg on MinIO — the primary analytics store, always enabled.</li>
+ * </ol>
  *
  * <h2>Pipeline stages</h2>
  * <ol>
@@ -58,6 +63,14 @@ import java.time.Duration;
  *   <li>{@code KAFKA_QUARANTINE_TOPIC}   — default {@code cdc.quarantine}</li>
  *   <li>{@code KAFKA_DRIFT_TOPIC}        — default {@code cdc.drift.signals}</li>
  *   <li>{@code KAFKA_CONSUMER_GROUP}     — default {@code flink-cdc-user-event-count}</li>
+ *   <li>{@code KAFKA_SINK_COMPRESSION}   — {@code none} (default), {@code snappy}, {@code lz4}, {@code zstd}</li>
+ *   <li>{@code KAFKA_SINK_BATCH_SIZE_BYTES} — default {@code 16384}</li>
+ *   <li>{@code KAFKA_SINK_LINGER_MS}     — default {@code 5}</li>
+ *   <li>{@code KAFKA_SINK_ACKS}          — default {@code all}</li>
+ * </ul>
+ *
+ * <h3>Window</h3>
+ * <ul>
  *   <li>{@code WINDOW_SIZE_SECONDS}      — default {@code 60}</li>
  *   <li>{@code OUT_OF_ORDERNESS_SECONDS} — default {@code 5}</li>
  *   <li>{@code VALIDATION_MAX_FUTURE_SKEW_MS} — default {@code 3600000} (1 h)</li>
@@ -67,14 +80,36 @@ import java.time.Duration;
  *   <li>{@code DRIFT_MIN_WINDOW_COUNT}        — default {@code 10}</li>
  * </ul>
  *
+ * <p>Flink parallelism and checkpointing knobs:
+ * <ul>
+ *   <li>{@code FLINK_PARALLELISM}              — operator parallelism, default {@code -1} (use cluster default)</li>
+ *   <li>{@code CHECKPOINT_INTERVAL_MS}         — checkpoint interval in ms, default {@code 30000}</li>
+ *   <li>{@code CHECKPOINT_TIMEOUT_MS}          — per-checkpoint timeout in ms, default {@code 60000}</li>
+ *   <li>{@code CHECKPOINT_MIN_PAUSE_MS}        — min pause between checkpoints in ms, default {@code 0}</li>
+ *   <li>{@code CHECKPOINT_MAX_CONCURRENT}      — max concurrent checkpoints, default {@code 1}</li>
+ *   <li>{@code CHECKPOINT_MODE}                — {@code exactly_once} (default) or {@code at_least_once}</li>
+ *   <li>{@code CHECKPOINT_UNALIGNED}           — enable unaligned checkpoints, default {@code false}</li>
+ *   <li>{@code RESTART_ATTEMPTS}               — fixed-delay restart attempts, default {@code 3}</li>
+ *   <li>{@code RESTART_DELAY_MS}               — fixed-delay restart interval in ms, default {@code 10000}</li>
+ * </ul>
+ *
+ * <p>Kafka producer tuning knobs (applied to the main sink and DLQ sink):
+ * <ul>
+ *   <li>{@code KAFKA_SINK_COMPRESSION}         — {@code none} (default), {@code snappy}, {@code lz4}, {@code zstd}, {@code gzip}</li>
+ *   <li>{@code KAFKA_SINK_BATCH_SIZE_BYTES}    — producer batch.size in bytes, default {@code 16384} (16 KB)</li>
+ *   <li>{@code KAFKA_SINK_LINGER_MS}           — producer linger.ms, default {@code 5}</li>
+ *   <li>{@code KAFKA_SINK_BUFFER_MEMORY_BYTES} — producer buffer.memory in bytes, default {@code 33554432} (32 MB)</li>
+ *   <li>{@code KAFKA_SINK_ACKS}                — producer acks, default {@code all}</li>
+ * </ul>
+ *
  * <p>Optional Apache Iceberg sink (set {@code ICEBERG_ENABLED=true} to activate):
  * <ul>
- *   <li>{@code ICEBERG_ENABLED}       — default {@code false}</li>
+ *   <li>{@code ICEBERG_ENABLED}       — default {@code true}; set {@code false} only for local dev</li>
  *   <li>{@code ICEBERG_CATALOG_TYPE}  — {@code hadoop} (default), {@code hive}, or {@code rest}</li>
- *   <li>{@code ICEBERG_WAREHOUSE}     — default {@code file:///tmp/iceberg-warehouse}</li>
+ *   <li>{@code ICEBERG_WAREHOUSE}     — default {@code s3a://streamforge/warehouse}</li>
  *   <li>{@code ICEBERG_DATABASE}      — default {@code streamforge}</li>
  *   <li>{@code ICEBERG_TABLE}         — default {@code user_event_counts}</li>
- *   <li>{@code ICEBERG_S3_ENDPOINT}   — S3/MinIO endpoint, e.g. {@code http://minio:9000}</li>
+ *   <li>{@code ICEBERG_S3_ENDPOINT}   — MinIO endpoint, e.g. {@code http://minio:9000}</li>
  *   <li>{@code ICEBERG_S3_ACCESS_KEY} — S3/MinIO access key</li>
  *   <li>{@code ICEBERG_S3_SECRET_KEY} — S3/MinIO secret key</li>
  * </ul>
@@ -103,9 +138,60 @@ public class CdcUserEventCountJob {
         LOG.info("Starting CdcUserEventCountJob: source={}, sink={}, quarantine={}, drift={}, window={}s",
                 sourceTopic, sinkTopic, quarantineTopic, driftTopic, windowSizeSeconds);
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.enableCheckpointing(30_000);
+        LOG.info("Starting CdcUserEventCountJob: source={}, sink={}, dlq={}, window={}s, " +
+                 "parallelism={}, checkpoint={}ms mode={} unaligned={}, " +
+                 "compression={} batchSize={} lingerMs={}",
+                sourceTopic, sinkTopic, dlqTopic.isBlank() ? "disabled" : dlqTopic, windowSizeSeconds,
+                parallelism < 0 ? "cluster-default" : parallelism,
+                checkpointIntervalMs, checkpointModeStr, unalignedCheckpoints,
+                kafkaSinkProps.getProperty("compression.type", "none"),
+                kafkaSinkProps.getProperty("batch.size", "16384"),
+                kafkaSinkProps.getProperty("linger.ms", "5"));
 
+        // ── Iceberg (first-class sink, enabled by default) ───────────────────
+        boolean icebergEnabled = Boolean.parseBoolean(env("ICEBERG_ENABLED", "true"));
+        String  catalogType    = env("ICEBERG_CATALOG_TYPE",  "hadoop");
+        String  warehouse      = env("ICEBERG_WAREHOUSE",     "s3a://streamforge/warehouse");
+        String  database       = env("ICEBERG_DATABASE",      "streamforge");
+        String  icebergTable   = env("ICEBERG_TABLE",         "user_event_counts");
+        String  s3Endpoint     = env("ICEBERG_S3_ENDPOINT",   "");
+        String  s3AccessKey    = env("ICEBERG_S3_ACCESS_KEY", "");
+        String  s3SecretKey    = env("ICEBERG_S3_SECRET_KEY", "");
+
+        LOG.info("Starting CdcUserEventCountJob: source={}, sink={}, dlq={}, window={}s " +
+                 "parallelism={}, ckpt={}ms mode={} iceberg={}",
+                sourceTopic, sinkTopic, dlqTopic.isBlank() ? "disabled" : dlqTopic,
+                windowSizeSeconds,
+                parallelism < 0 ? "cluster-default" : parallelism,
+                ckptIntervalMs, ckptModeStr,
+                icebergEnabled ? warehouse + "/" + database + "." + icebergTable : "disabled");
+
+        // ── Flink environment ────────────────────────────────────────────────
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+        if (parallelism > 0) {
+            env.setParallelism(parallelism);
+        }
+
+        // ── Checkpointing ────────────────────────────────────────────────────
+        CheckpointingMode ckptMode = "at_least_once".equalsIgnoreCase(checkpointModeStr)
+                ? CheckpointingMode.AT_LEAST_ONCE
+                : CheckpointingMode.EXACTLY_ONCE;
+
+        env.enableCheckpointing(checkpointIntervalMs, ckptMode);
+
+        CheckpointConfig ckptCfg = env.getCheckpointConfig();
+        ckptCfg.setCheckpointTimeout(checkpointTimeoutMs);
+        ckptCfg.setMinPauseBetweenCheckpoints(checkpointMinPauseMs);
+        ckptCfg.setMaxConcurrentCheckpoints(maxConcurrentCkpts);
+        ckptCfg.enableUnalignedCheckpoints(unalignedCheckpoints);
+        ckptCfg.setExternalizedCheckpointCleanup(
+                CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+
+        env.setRestartStrategy(
+                RestartStrategies.fixedDelayRestart(restartAttempts, restartDelayMs));
+
+        // ── Source ───────────────────────────────────────────────────────────
         KafkaSource<CdcEvent> source = KafkaSource.<CdcEvent>builder()
                 .setBootstrapServers(bootstrapServers)
                 .setTopics(sourceTopic)
@@ -127,6 +213,8 @@ public class CdcUserEventCountJob {
 
         DataStream<DeadLetterEvent> deadLetters =
                 schemaFiltered.getSideOutput(SchemaEvolutionFilter.DLQ_TAG);
+
+        Properties kafkaSinkProps = buildKafkaSinkProps();
 
         if (!dlqTopic.isBlank()) {
             deadLetters.sinkTo(kafkaSink(bootstrapServers, dlqTopic,
@@ -214,5 +302,29 @@ public class CdcUserEventCountJob {
     static String env(String name, String defaultValue) {
         String v = System.getenv(name);
         return (v != null && !v.isBlank()) ? v : defaultValue;
+    }
+
+    /**
+     * Builds Kafka producer properties from environment variables.
+     * These apply to both the main sink and the DLQ sink.
+     */
+    private static Properties buildKafkaSinkProps() {
+        Properties props = new Properties();
+
+        // Batching: larger batch + linger improves throughput at the cost of latency
+        props.setProperty("batch.size",    env("KAFKA_SINK_BATCH_SIZE_BYTES",    "16384"));
+        props.setProperty("linger.ms",     env("KAFKA_SINK_LINGER_MS",           "5"));
+        props.setProperty("buffer.memory", env("KAFKA_SINK_BUFFER_MEMORY_BYTES", "33554432"));
+
+        // Compression: reduces network/disk I/O; snappy/lz4 best for throughput, zstd for ratio
+        String compression = env("KAFKA_SINK_COMPRESSION", "none");
+        if (!"none".equalsIgnoreCase(compression)) {
+            props.setProperty("compression.type", compression);
+        }
+
+        // Durability: "all" waits for all in-sync replicas; "1" or "0" for lower latency
+        props.setProperty("acks", env("KAFKA_SINK_ACKS", "all"));
+
+        return props;
     }
 }

@@ -1,5 +1,7 @@
 package ai.streamforge.processor;
 
+import ai.streamforge.processor.CdcAggregationFunctions.EventCountAggregator;
+import ai.streamforge.processor.CdcAggregationFunctions.WindowMetadataFunction;
 import ai.streamforge.processor.deserialization.SchemaAwareCdcDeserializationSchema;
 import ai.streamforge.processor.deserialization.SchemaEvolutionFilter;
 import ai.streamforge.processor.model.CdcEvent;
@@ -9,24 +11,16 @@ import ai.streamforge.processor.serialization.DeadLetterEventSerializationSchema
 import ai.streamforge.processor.serialization.UserEventCountSerializationSchema;
 import ai.streamforge.processor.sink.IcebergSinkFactory;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.functions.AggregateFunction;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
-import org.apache.flink.metrics.Counter;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.windowing.RichProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -256,46 +250,6 @@ public class CdcUserEventCountJob {
         }
 
         env.execute("CdcUserEventCountJob");
-    }
-
-    // ── Aggregation functions ────────────────────────────────────────────────
-
-    static class EventCountAggregator implements AggregateFunction<CdcEvent, Long, Long> {
-        @Override public Long createAccumulator()           { return 0L; }
-        @Override public Long add(CdcEvent e, Long acc)     { return acc + 1; }
-        @Override public Long getResult(Long acc)           { return acc; }
-        @Override public Long merge(Long a, Long b)         { return a + b; }
-    }
-
-    /**
-     * Attaches window boundaries and the keyed userId to the final count.
-     * Metrics:
-     * <ul>
-     *   <li>{@code windows_fired_total}</li>
-     *   <li>{@code window_counts_emitted_total}</li>
-     * </ul>
-     */
-    static class WindowMetadataFunction
-            extends RichProcessWindowFunction<Long, UserEventCount, String, TimeWindow> {
-
-        private transient Counter windowsFired;
-        private transient Counter countsEmitted;
-
-        @Override
-        public void open(Configuration parameters) {
-            windowsFired  = getRuntimeContext().getMetricGroup().counter("windows_fired_total");
-            countsEmitted = getRuntimeContext().getMetricGroup().counter("window_counts_emitted_total");
-        }
-
-        @Override
-        public void process(String userId, Context ctx, Iterable<Long> counts,
-                            Collector<UserEventCount> out) {
-            long count = counts.iterator().next();
-            windowsFired.inc();
-            countsEmitted.inc(count);
-            out.collect(new UserEventCount(
-                    userId, count, ctx.window().getStart(), ctx.window().getEnd()));
-        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

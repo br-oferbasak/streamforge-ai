@@ -149,3 +149,53 @@ services:
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET: processed
       MINIO_PREFIX: streamforge/features
+
+  # ── Iceberg table maintenance ────────────────────────────────────────────────
+  # Runs on startup and then every MAINTENANCE_INTERVAL_SECONDS (default 3 600 s / 1 h).
+  # Phase 1: expire snapshots older than SNAPSHOT_MAX_AGE_HOURS.
+  # Phase 2: compact fragmented manifests.
+  # Phase 3: report partitions with small data files.
+  #
+  # To trigger an immediate manual run:
+  #   docker compose exec iceberg-maintenance \
+  #     java -cp /opt/stream-processor/stream-processor-*.jar \
+  #     ai.streamforge.processor.maintenance.IcebergMaintenanceJob
+  #
+  # To run in dry-run mode (report only, no commits):
+  #   DRY_RUN=true docker compose up iceberg-maintenance
+  iceberg-maintenance:
+    image: flink:1.18.1-java17
+    depends_on:
+      - minio-init
+      - jobmanager
+    entrypoint: >
+      /bin/bash -c "
+        INTERVAL=$${MAINTENANCE_INTERVAL_SECONDS:-3600}
+        echo '[maintenance] Starting Iceberg maintenance loop (interval=$${INTERVAL}s)'
+        while true; do
+          echo '[maintenance] Running at '$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          java -cp /opt/stream-processor/stream-processor-*.jar \
+            ai.streamforge.processor.maintenance.IcebergMaintenanceJob \
+            || echo '[maintenance] Run failed — will retry next interval'
+          echo '[maintenance] Sleeping $${INTERVAL}s'
+          sleep $${INTERVAL}
+        done
+      "
+    environment:
+      ICEBERG_CATALOG_TYPE: hadoop
+      ICEBERG_WAREHOUSE: s3a://streamforge/warehouse
+      ICEBERG_DATABASE: streamforge
+      ICEBERG_TABLE: user_event_counts
+      ICEBERG_S3_ENDPOINT: http://minio:9000
+      ICEBERG_S3_ACCESS_KEY: minioadmin
+      ICEBERG_S3_SECRET_KEY: minioadmin
+      # Retention: expire snapshots older than 7 days, always keep ≥ 10
+      SNAPSHOT_MAX_AGE_HOURS: "168"
+      SNAPSHOT_RETAIN_LAST: "10"
+      # Flag files smaller than 64 MB as compaction candidates
+      COMPACT_SMALL_FILE_THRESHOLD_BYTES: "67108864"
+      # How often maintenance runs (seconds); override via env for faster iteration
+      MAINTENANCE_INTERVAL_SECONDS: "3600"
+      DRY_RUN: "false"
+    volumes:
+      - ../../stream-processor/target:/opt/stream-processor:ro

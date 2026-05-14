@@ -1,0 +1,18 @@
+# ML Training + Prefetch Example — Python dependencies
+#
+# Core (inherited from prefetch-engine/requirements.txt):
+#   minio>=7.2.7
+#   prometheus_client>=0.20
+#
+# Optional ML backends — the pipeline works without either:
+#   scikit-learn  — enables RandomForestClassifier (more realistic training)
+#   pyiceberg     — enables direct Iceberg table reads (requires catalog URI)
+#
+# Install all optional deps:
+#   pip install -r examples/ml-training-prefetch/requirements.txt
+
+# Optional ML backend
+scikit-learn>=1.4.0
+
+# Optional Iceberg reader
+# pyiceberg>=0.6.0

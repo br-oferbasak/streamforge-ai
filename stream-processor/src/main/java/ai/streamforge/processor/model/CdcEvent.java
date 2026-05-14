@@ -1,7 +1,11 @@
 package ai.streamforge.processor.model;
 
+import ai.streamforge.processor.schema.SchemaChange;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Debezium CDC envelope for a MySQL row change event.
@@ -29,6 +33,13 @@ public class CdcEvent {
      */
     public transient SchemaVersion schemaVersion = SchemaVersion.UNKNOWN;
 
+    /**
+     * Schema changes detected during deserialization of this event (e.g. type widenings).
+     * Non-empty only when the handler detects a deviation from the expected schema.
+     * Transient — for in-process routing only.
+     */
+    public transient List<SchemaChange> detectedChanges = new ArrayList<>();
+
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class UserEventRow {
 
@@ -49,5 +60,9 @@ public class CdcEvent {
         /** V2+: client IP address (nullable). */
         @JsonProperty("ip_address")
         public String ipAddress;
+
+        /** V3+: arbitrary metadata JSON blob (nullable). */
+        @JsonProperty("metadata")
+        public String metadata;
     }
 }

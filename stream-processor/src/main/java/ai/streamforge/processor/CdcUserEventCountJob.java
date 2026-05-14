@@ -77,6 +77,8 @@ import java.time.Duration;
  *   <li>{@code ICEBERG_S3_ENDPOINT}   — S3/MinIO endpoint, e.g. {@code http://minio:9000}</li>
  *   <li>{@code ICEBERG_S3_ACCESS_KEY} — S3/MinIO access key</li>
  *   <li>{@code ICEBERG_S3_SECRET_KEY} — S3/MinIO secret key</li>
+ *   <li>{@code ICEBERG_REST_URI}      — REST catalog base URL, e.g. {@code http://iceberg-rest:8181};
+ *       required when {@code ICEBERG_CATALOG_TYPE=rest}</li>
  * </ul>
  */
 public class CdcUserEventCountJob {
@@ -185,11 +187,12 @@ public class CdcUserEventCountJob {
             String s3Endpoint   = env("ICEBERG_S3_ENDPOINT",   "");
             String s3AccessKey  = env("ICEBERG_S3_ACCESS_KEY", "");
             String s3SecretKey  = env("ICEBERG_S3_SECRET_KEY", "");
+            String restUri      = env("ICEBERG_REST_URI",      "");
 
             LOG.info("Iceberg sink enabled: catalog={}, warehouse={}, table={}.{}",
                     catalogType, warehouse, database, icebergTable);
             IcebergSinkFactory.attach(counts, catalogType, warehouse, database, icebergTable,
-                    s3Endpoint, s3AccessKey, s3SecretKey);
+                    s3Endpoint, s3AccessKey, s3SecretKey, restUri);
         }
 
         env.execute("CdcUserEventCountJob");

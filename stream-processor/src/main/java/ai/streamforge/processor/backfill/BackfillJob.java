@@ -153,11 +153,12 @@ public class BackfillJob {
             String s3Endpoint   = env("ICEBERG_S3_ENDPOINT",   "");
             String s3AccessKey  = env("ICEBERG_S3_ACCESS_KEY", "");
             String s3SecretKey  = env("ICEBERG_S3_SECRET_KEY", "");
+            String restUri      = env("ICEBERG_REST_URI",      "");
 
             LOG.info("Iceberg sink enabled (backfill): catalog={}, table={}.{}",
                     catalogType, database, icebergTable);
             IcebergSinkFactory.attach(counts, catalogType, warehouse, database, icebergTable,
-                    s3Endpoint, s3AccessKey, s3SecretKey);
+                    s3Endpoint, s3AccessKey, s3SecretKey, restUri);
         }
 
         env.execute("BackfillJob[" + backfillMode + "]");

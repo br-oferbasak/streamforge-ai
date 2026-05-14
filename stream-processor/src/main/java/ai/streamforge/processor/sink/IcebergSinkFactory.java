@@ -48,32 +48,27 @@ import java.util.Map;
  *       without touching already-compacted older partitions.</li>
  * </ul>
  *
- * <p>Supported catalog types: {@code hadoop} (default), {@code hive}, {@code rest}.
- * For MinIO / S3-compatible storage set the {@code ICEBERG_S3_*} environment variables
- * so the Hadoop S3A filesystem is configured automatically.
+ * <h2>Supported catalog types</h2>
+ * <dl>
+ *   <dt>{@code hadoop} (default)</dt>
+ *   <dd>File-system catalog backed by a Hadoop-compatible path.  S3A is used for
+ *       MinIO/S3; configure via the {@code ICEBERG_S3_*} env vars.</dd>
+ *   <dt>{@code hive}</dt>
+ *   <dd>Hive Metastore.  Set {@code ICEBERG_WAREHOUSE} to the metastore URI
+ *       (e.g. {@code thrift://hive-metastore:9083}).</dd>
+ *   <dt>{@code rest}</dt>
+ *   <dd>Iceberg REST Catalog (spec v1).  Set {@code ICEBERG_REST_URI} to the
+ *       server base URL (e.g. {@code http://iceberg-rest:8181}).  The Flink job
+ *       writes data files directly to S3/MinIO via Iceberg's native
+ *       {@code S3FileIO}; set the {@code ICEBERG_S3_*} vars so the job can reach
+ *       the object store.</dd>
+ * </dl>
  *
- * <p>Write file size and compaction tuning (via environment variables):
- * <ul>
- *   <li>{@code ICEBERG_WRITE_TARGET_FILE_SIZE_BYTES} — target data file size before rolling,
- *       default {@code 134217728} (128 MB). Smaller files mean more frequent commits but
- *       finer partitioning granularity; larger files reduce S3 PUT costs but slow down
- *       compaction scans.</li>
- *   <li>{@code ICEBERG_WRITE_FORMAT}                 — {@code parquet} (default), {@code avro},
- *       or {@code orc}.</li>
- *   <li>{@code ICEBERG_WRITE_UPSERT}                 — enable upsert mode, default {@code false}.
- *       Requires an equality-delete scheme; trades write amplification for MERGE semantics.</li>
- *   <li>{@code ICEBERG_COMPACTION_TARGET_FILE_SIZE}  — target file size for the rewrite action
- *       (minor compaction), default same as write target. Governs how small files are merged
- *       when running {@code RewriteDataFilesAction}.</li>
- *   <li>{@code ICEBERG_COMPACTION_MIN_INPUT_FILES}   — minimum number of small files that must
- *       exist before a compaction group is submitted, default {@code 5}. Lower values compact
- *       more aggressively; higher values reduce Iceberg catalog write amplification.</li>
- *   <li>{@code ICEBERG_S3_MULTIPART_SIZE}            — S3A multipart upload part size,
- *       default {@code 67108864} (64 MB). Must be ≥ 5 MB (AWS minimum). Larger parts improve
- *       PUT throughput for big files at the cost of memory per upload thread.</li>
- *   <li>{@code ICEBERG_S3_MULTIPART_THRESHOLD}       — file size above which multipart upload
- *       is used, default {@code 67108864} (64 MB).</li>
- * </ul>
+ * <h2>Discoverability</h2>
+ * When {@code rest} is used the table is registered in a shared catalog that any
+ * Iceberg-compatible query engine (Trino, Spark, PyIceberg, etc.) can discover
+ * by pointing at the same REST server URL.  Other engines see the exact same
+ * namespace ({@code ICEBERG_DATABASE}) and table ({@code ICEBERG_TABLE}).
  */
 public class IcebergSinkFactory {
 
@@ -92,19 +87,11 @@ public class IcebergSinkFactory {
     );
 
     /**
-     * Partition by calendar day (UTC) derived from {@code window_start_ms}.
-     * Using identity transform keeps partition pruning exact with no transform overhead.
-     */
-    public static final PartitionSpec PARTITION_SPEC =
-            PartitionSpec.builderFor(TABLE_SCHEMA)
-                    .identity("event_date")
-                    .build();
-
-    // ── Public entry point ───────────────────────────────────────────────────
-
-    /**
-     * Maps {@code stream} to Iceberg {@link RowData}, ensures the partitioned table
-     * exists, and attaches a {@link FlinkSink} in append mode.
+     * Attaches an Iceberg sink to {@code stream}, creating the namespace and table
+     * if they do not already exist.
+     *
+     * @param restUri   REST catalog server base URL; required when
+     *                  {@code catalogType=rest}, ignored otherwise.
      */
     public static void attach(
             DataStream<UserEventCount> stream,
@@ -114,10 +101,13 @@ public class IcebergSinkFactory {
             String tableName,
             String s3Endpoint,
             String s3AccessKey,
-            String s3SecretKey) {
+            String s3SecretKey,
+            String restUri) {
 
-        Configuration hadoopConf = buildHadoopConf(s3Endpoint, s3AccessKey, s3SecretKey);
-        CatalogLoader catalogLoader = buildCatalogLoader(catalogType, warehouse, hadoopConf);
+        Map<String, String> props = buildCatalogProps(
+                catalogType, warehouse, s3Endpoint, s3AccessKey, s3SecretKey, restUri);
+        Configuration hadoopConf  = buildHadoopConf(catalogType, s3Endpoint, s3AccessKey, s3SecretKey);
+        CatalogLoader catalogLoader = buildCatalogLoader(catalogType, hadoopConf, props);
         TableIdentifier tableId = TableIdentifier.of(database, tableName);
 
         ensureTable(catalogLoader, tableId, database);
@@ -138,47 +128,59 @@ public class IcebergSinkFactory {
                 .append()
                 .name("Iceberg Sink: " + database + "." + tableName);
 
-        LOG.info("Iceberg sink attached: catalog={}, warehouse={}, table={}.{}, writeProps={}",
-                catalogType, warehouse, database, tableName, writeProps);
+        LOG.info("Iceberg sink attached: catalog={}, table={}.{}", catalogType, database, tableName);
     }
 
-    // ── RowData mapping ──────────────────────────────────────────────────────
+    // ── Catalog configuration ────────────────────────────────────────────────
 
-    /** Converts a {@link UserEventCount} to the 5-field Iceberg {@link RowData}. */
-    static RowData toRowData(UserEventCount e) {
-        GenericRowData row = new GenericRowData(5);
-        row.setField(0, StringData.fromString(e.userId));
-        row.setField(1, e.count);
-        row.setField(2, e.windowStartMs);
-        row.setField(3, e.windowEndMs);
-        row.setField(4, StringData.fromString(toEventDate(e.windowStartMs)));
-        return row;
-    }
+    /**
+     * Builds catalog properties appropriate for each catalog type.
+     *
+     * <p>For {@code rest}: uses Iceberg's native {@code S3FileIO} so that data files
+     * are written directly to MinIO without going through Hadoop S3A.  The REST
+     * server itself never proxies file I/O — the Flink job writes files directly
+     * and only reports the resulting manifest/snapshot to the catalog.
+     */
+    static Map<String, String> buildCatalogProps(
+            String catalogType,
+            String warehouse,
+            String s3Endpoint,
+            String s3AccessKey,
+            String s3SecretKey,
+            String restUri) {
 
-    /** Returns a {@code YYYY-MM-DD} string (UTC) for the given epoch-millisecond timestamp. */
-    static String toEventDate(long epochMs) {
-        return Instant.ofEpochMilli(epochMs)
-                .atZone(ZoneOffset.UTC)
-                .toLocalDate()
-                .toString();
-    }
-
-    // ── Catalog / table helpers ──────────────────────────────────────────────
-
-    static CatalogLoader buildCatalogLoader(
-            String catalogType, String warehouse, Configuration hadoopConf) {
         Map<String, String> props = new HashMap<>();
         props.put("warehouse", warehouse);
+
+        if ("rest".equalsIgnoreCase(catalogType)) {
+            if (restUri == null || restUri.isBlank()) {
+                throw new IllegalArgumentException(
+                        "ICEBERG_REST_URI must be set when ICEBERG_CATALOG_TYPE=rest");
+            }
+            props.put("uri", restUri);
+
+            // S3FileIO: Iceberg-native S3 client; no Hadoop dependency on the write path.
+            props.put("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
+            if (s3Endpoint != null && !s3Endpoint.isBlank()) {
+                props.put("s3.endpoint",           s3Endpoint);
+                props.put("s3.access-key-id",      s3AccessKey != null ? s3AccessKey : "");
+                props.put("s3.secret-access-key",  s3SecretKey != null ? s3SecretKey : "");
+                props.put("s3.path-style-access",  "true");
+            }
+        }
+
+        return props;
+    }
+
+    static CatalogLoader buildCatalogLoader(
+            String catalogType, Configuration hadoopConf, Map<String, String> props) {
         return switch (catalogType.toLowerCase()) {
             case "hadoop" -> CatalogLoader.hadoop("streamforge", hadoopConf, props);
             case "hive"   -> CatalogLoader.hive("streamforge", hadoopConf, props);
-            case "rest"   -> {
-                props.put("uri", warehouse);
-                yield CatalogLoader.rest("streamforge", hadoopConf, props);
-            }
+            case "rest"   -> CatalogLoader.rest("streamforge", hadoopConf, props);
             default -> throw new IllegalArgumentException(
-                    "Unsupported Iceberg catalog type: " + catalogType
-                    + ". Supported: hadoop, hive, rest");
+                    "Unsupported ICEBERG_CATALOG_TYPE: '" + catalogType
+                    + "'. Valid: hadoop, hive, rest");
         };
     }
 
@@ -203,31 +205,16 @@ public class IcebergSinkFactory {
         }
     }
 
-    // ── Write properties ─────────────────────────────────────────────────────
-
-    static Map<String, String> buildWriteProperties() {
-        Map<String, String> props = new HashMap<>();
-        props.put("write.target-file-size-bytes",
-                senv("ICEBERG_WRITE_TARGET_FILE_SIZE_BYTES", "134217728"));
-        props.put("write.format.default",
-                senv("ICEBERG_WRITE_FORMAT", "parquet"));
-        props.put("write.parquet.row-group-size-bytes",
-                senv("ICEBERG_WRITE_PARQUET_ROW_GROUP_SIZE_BYTES", "134217728"));
-        props.put("write.parquet.page-size-bytes",
-                senv("ICEBERG_WRITE_PARQUET_PAGE_SIZE_BYTES", "1048576"));
-        return props;
-    }
-
-    static int writeParallelism() {
-        String v = System.getenv("ICEBERG_WRITE_PARALLELISM");
-        return (v != null && !v.isBlank()) ? Integer.parseInt(v) : -1;
-    }
-
-    // ── Hadoop / S3A config ──────────────────────────────────────────────────
-
-    static Configuration buildHadoopConf(
-            String s3Endpoint, String s3AccessKey, String s3SecretKey) {
+    /**
+     * Hadoop config is only used for {@code hadoop} and {@code hive} catalog types.
+     * For {@code rest}, file I/O is handled by {@code S3FileIO} via catalog properties.
+     */
+    private static Configuration buildHadoopConf(
+            String catalogType, String s3Endpoint, String s3AccessKey, String s3SecretKey) {
         Configuration conf = new Configuration();
+        if ("rest".equalsIgnoreCase(catalogType)) {
+            return conf; // S3FileIO doesn't use Hadoop conf
+        }
         if (s3Endpoint != null && !s3Endpoint.isBlank()) {
             conf.set("fs.s3a.endpoint",          s3Endpoint);
             conf.set("fs.s3a.access.key",        s3AccessKey != null ? s3AccessKey : "");

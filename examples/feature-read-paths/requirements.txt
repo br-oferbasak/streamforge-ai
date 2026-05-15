@@ -1,0 +1,11 @@
+# Offline batch reader
+minio>=7.2.7
+
+# Online low-latency reader
+redis>=5.0.0
+
+# Kafka → online store writer
+kafka-python>=2.0.2
+
+# Optional: Iceberg reads (offline path)
+# pyiceberg>=0.6.0

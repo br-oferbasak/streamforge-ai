@@ -1,0 +1,12 @@
+version: "1"
+name: bad-source-type
+
+source:
+  type: postgres_cdc
+  topic: some.topic
+  bootstrap_servers: localhost:9092
+
+sink:
+  type: kafka
+  topic: out.topic
+  bootstrap_servers: localhost:9092

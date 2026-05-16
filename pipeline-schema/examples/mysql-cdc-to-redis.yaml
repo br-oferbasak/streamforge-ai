@@ -1,0 +1,70 @@
+version: "1"
+name: mysql-direct-to-redis
+description: >
+  Direct MySQL CDC source (no intermediate Kafka topic) →
+  sliding-window event rates → Redis online feature store.
+  Use this pattern for sub-second online serving latency.
+
+labels:
+  team: ml-platform
+  env: production
+
+source:
+  type: mysql_cdc
+  connector:
+    hostname: "${MYSQL_HOST:-mysql}"
+    port: 3306
+    user: "${MYSQL_USER:-debezium}"
+    password: "${MYSQL_PASSWORD}"
+    server_id: 184054
+    server_name: streamforge
+    database: streamforge
+    tables:
+      - streamforge.customers
+      - streamforge.user_events
+    snapshot_mode: initial
+    include_schema_changes: true
+    schema_history_topic: debezium_schema_history.streamforge
+
+transforms:
+  - id: schema_guard
+    type: schema_evolution
+    column_aliases:
+      user_id: uid
+      event_type: type
+      created_at: ts
+    on_breaking_change: dead_letter
+    dead_letter_topic: cdc.dead.letter
+    dead_letter_bootstrap_servers: "${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}"
+
+  - id: keep_inserts
+    type: filter
+    condition: "op == 'c' and after.user_id != null"
+
+  - id: enrich_fields
+    type: map
+    fields:
+      user_id: "after.user_id"
+      event_type: "after.event_type"
+      created_at_ms: "after.created_at"
+
+  - id: sliding_event_rate
+    type: sliding_window
+    description: 5-minute event rate with 1-minute slide for real-time serving.
+    key_by: user_id
+    window_size_seconds: 300
+    slide_seconds: 60
+    out_of_orderness_seconds: 5
+    aggregate:
+      function: count
+      output_field: event_count
+
+sink:
+  type: redis
+  host: "${REDIS_HOST:-localhost}"
+  port: 6379
+  db: 0
+  password: "${REDIS_PASSWORD}"
+  ttl_seconds: 604800          # 7 days
+  history_ttl_seconds: 86400   # 24 hours
+  max_history_windows: 2880

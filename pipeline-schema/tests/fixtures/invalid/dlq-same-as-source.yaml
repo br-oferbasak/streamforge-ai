@@ -1,0 +1,18 @@
+version: "1"
+name: dlq-feedback-loop
+
+source:
+  type: kafka_cdc
+  topic: streamforge.user_events
+  bootstrap_servers: localhost:9092
+
+transforms:
+  - id: schema_guard
+    type: schema_evolution
+    on_breaking_change: dead_letter
+    dead_letter_topic: streamforge.user_events   # same as source → feedback loop
+
+sink:
+  type: kafka
+  topic: out.topic
+  bootstrap_servers: localhost:9092

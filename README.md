@@ -2,7 +2,7 @@
 
 # StreamForge AI
 
-## Project Overview
+## 1. Project Overview
 
 StreamForge AI is a real-time data pipeline platform for AI and analytics workloads. It focuses on:
 
@@ -11,7 +11,7 @@ StreamForge AI is a real-time data pipeline platform for AI and analytics worklo
 - object-storage-based data sinking
 - storage-aware prefetching for ML workloads
 
-## Motivation
+## 2. Motivation
 
 - Provide a minimal but realistic open-source AI data pipeline
 - Support local development and demo environments

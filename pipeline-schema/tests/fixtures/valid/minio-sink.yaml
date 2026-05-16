@@ -1,0 +1,24 @@
+version: "1"
+name: minio-sink-pipeline
+
+source:
+  type: kafka_cdc
+  topic: streamforge.streamforge.user_events
+  bootstrap_servers: localhost:9092
+
+sink:
+  type: minio
+  bucket: processed
+  prefix: streamforge/features
+  s3:
+    endpoint: minio:9000
+    access_key: minioadmin
+    secret_key: minioadmin
+    secure: false
+
+prefetch:
+  enabled: true
+  top_n: 50
+  source:
+    bucket: processed
+    prefix: streamforge/features

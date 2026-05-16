@@ -1,0 +1,82 @@
+version: "1"
+name: user-event-counts
+description: >
+  Reads MySQL CDC events from Kafka, normalises schema changes,
+  filters to inserts, computes per-user event counts in 60-second
+  tumbling windows, and writes to Kafka + Iceberg with prefetch warming.
+
+labels:
+  team: data-platform
+  env: production
+
+# ── Source ────────────────────────────────────────────────────────────────────
+source:
+  type: kafka_cdc
+  topic: streamforge.streamforge.user_events
+  bootstrap_servers: "${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}"
+  consumer_group: flink-cdc-user-event-count
+  start_offset: committed
+
+# ── Transforms ────────────────────────────────────────────────────────────────
+transforms:
+  - id: normalise_schema
+    type: schema_evolution
+    description: Normalise field renames and route breaking changes to DLQ.
+    column_aliases:
+      user_id: uid         # uid was the original V1 field name
+      event_type: type
+      created_at: ts
+    on_breaking_change: dead_letter
+    dead_letter_topic: cdc.dead.letter
+    dead_letter_bootstrap_servers: "${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}"
+
+  - id: inserts_only
+    type: filter
+    description: Keep only INSERT operations with a valid user_id.
+    condition: "op == 'c' and after.user_id != null"
+    on_drop: discard
+
+  - id: count_events
+    type: tumbling_window
+    description: Count events per user in 60-second event-time windows.
+    key_by: user_id
+    window_size_seconds: 60
+    out_of_orderness_seconds: 5
+    aggregate:
+      function: count
+      output_field: event_count
+
+# ── Sink ──────────────────────────────────────────────────────────────────────
+sink:
+  type: iceberg
+  catalog_type: rest
+  catalog_uri: "${ICEBERG_CATALOG_URI:-http://iceberg-rest:8181}"
+  warehouse: "${ICEBERG_WAREHOUSE:-s3a://processed/warehouse}"
+  database: streamforge
+  table: user_event_counts
+  write_format: parquet
+  partition_by:
+    - days(window_start_ms)
+  s3:
+    endpoint: "${MINIO_ENDPOINT:-minio:9000}"
+    access_key: "${MINIO_ACCESS_KEY:-minioadmin}"
+    secret_key: "${MINIO_SECRET_KEY:-minioadmin}"
+    secure: false
+
+# ── Prefetch ──────────────────────────────────────────────────────────────────
+prefetch:
+  enabled: true
+  cache_dir: /tmp/streamforge/prefetch-cache
+  top_n: 50
+  source:
+    bucket: processed
+    prefix: streamforge/features
+    max_files: 500
+    s3:
+      endpoint: "${MINIO_ENDPOINT:-minio:9000}"
+      access_key: "${MINIO_ACCESS_KEY:-minioadmin}"
+      secret_key: "${MINIO_SECRET_KEY:-minioadmin}"
+      secure: false
+  scoring:
+    access_count_weight: 1.0
+    recency_weight: 0.000001

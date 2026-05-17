@@ -1,0 +1,21 @@
+version: "1"
+name: iceberg-sink-pipeline
+
+source:
+  type: kafka_cdc
+  topic: streamforge.streamforge.user_events
+  bootstrap_servers: localhost:9092
+
+transforms:
+  - id: window_count
+    type: tumbling_window
+    key_by: user_id
+    window_size_seconds: 30
+    aggregate: count
+
+sink:
+  type: iceberg
+  catalog_type: hadoop
+  warehouse: file:///tmp/iceberg-warehouse
+  database: streamforge
+  table: user_event_counts

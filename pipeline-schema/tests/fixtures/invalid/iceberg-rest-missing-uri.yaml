@@ -1,0 +1,15 @@
+version: "1"
+name: iceberg-rest-missing-uri
+
+source:
+  type: kafka_cdc
+  topic: some.topic
+  bootstrap_servers: localhost:9092
+
+sink:
+  type: iceberg
+  catalog_type: rest
+  warehouse: s3a://my-bucket/warehouse
+  database: streamforge
+  table: user_event_counts
+  # catalog_uri is intentionally missing — should fail validation

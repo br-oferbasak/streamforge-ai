@@ -1,0 +1,73 @@
+version: "1"
+name: cdc-to-minio
+description: >
+  CDC inserts → dedup within 10 s → per-user 30-second window counts →
+  written as date-partitioned NDJSON in MinIO. Prefetch warms cache
+  for the downstream ML trainer.
+
+labels:
+  env: staging
+
+source:
+  type: kafka_cdc
+  topic: streamforge.streamforge.user_events
+  bootstrap_servers: "${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}"
+  consumer_group: cdc-to-minio-consumer
+
+transforms:
+  - id: schema_guard
+    type: schema_evolution
+    column_aliases:
+      user_id: uid
+      event_type: type
+      created_at: ts
+    on_breaking_change: dead_letter
+    dead_letter_topic: cdc.dead.letter
+
+  - id: keep_inserts
+    type: filter
+    condition: "op == 'c' and after.user_id != null"
+
+  - id: dedup_rapid_fire
+    type: dedup
+    description: Drop duplicate user inserts within a 10-second window.
+    key_by: [user_id, event_type]
+    window_size_seconds: 10
+    keep: first
+
+  - id: window_count
+    type: tumbling_window
+    key_by: user_id
+    window_size_seconds: 30
+    out_of_orderness_seconds: 3
+    aggregate: count
+
+sink:
+  type: minio
+  bucket: processed
+  prefix: streamforge/features
+  format: ndjson
+  partition_pattern: YYYY/MM/DD/HH
+  max_shard_rows: 50000
+  s3:
+    endpoint: "${MINIO_ENDPOINT:-minio:9000}"
+    access_key: "${MINIO_ACCESS_KEY:-minioadmin}"
+    secret_key: "${MINIO_SECRET_KEY:-minioadmin}"
+    secure: false
+
+prefetch:
+  enabled: true
+  cache_dir: /tmp/streamforge/prefetch-cache
+  top_n: 50
+  source:
+    bucket: processed
+    prefix: streamforge/features
+    max_files: 500
+    s3:
+      endpoint: "${MINIO_ENDPOINT:-minio:9000}"
+      access_key: "${MINIO_ACCESS_KEY:-minioadmin}"
+      secret_key: "${MINIO_SECRET_KEY:-minioadmin}"
+      secure: false
+  scoring:
+    access_count_weight: 1.0
+    recency_weight: 0.000001

@@ -1,0 +1,20 @@
+version: "1"
+name: bad-slide-window
+
+source:
+  type: kafka_cdc
+  topic: some.topic
+  bootstrap_servers: localhost:9092
+
+transforms:
+  - id: broken_window
+    type: sliding_window
+    key_by: user_id
+    window_size_seconds: 60
+    slide_seconds: 120        # slide > window_size — semantically invalid
+    aggregate: count
+
+sink:
+  type: kafka
+  topic: out.topic
+  bootstrap_servers: localhost:9092

@@ -1,0 +1,21 @@
+version: "1"
+name: mysql-cdc-source-pipeline
+
+source:
+  type: mysql_cdc
+  connector:
+    hostname: mysql
+    port: 3306
+    user: debezium
+    password: secret
+    server_id: 184054
+    server_name: streamforge
+    database: streamforge
+    tables:
+      - streamforge.customers
+    snapshot_mode: initial
+
+sink:
+  type: kafka
+  topic: enriched.user.events
+  bootstrap_servers: localhost:9092

@@ -44,12 +44,23 @@ Prefix sharding:
 """
 import json
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from io import BytesIO
+from pathlib import Path
 
 from kafka import KafkaConsumer
 from minio import Minio
+
+# Optional lineage tracking — enabled when the lineage package is on the path.
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+try:
+    from lineage.tracker import lineage_run, kafka_dataset, minio_dataset
+    from lineage.emitter import default_emitter as _lineage_default_emitter
+    _LINEAGE_ENABLED = True
+except ImportError:
+    _LINEAGE_ENABLED = False
 
 
 def env(name: str, default: str) -> str:
@@ -132,26 +143,46 @@ def main() -> None:
     )
     ensure_bucket(minio_client, minio_bucket)
 
-    batch: list = []
-    batch_start = time.monotonic()
+    # Emit a START lineage event when the sink begins consuming.
+    if _LINEAGE_ENABLED:
+        _emitter = _lineage_default_emitter()
+        _input_ds = [kafka_dataset(kafka_topic, kafka_servers)]
+        _output_ds = [minio_dataset(minio_bucket, minio_prefix, minio_endpoint)]
+        _lineage_ctx = lineage_run(
+            "streamforge", "feature-sink",
+            inputs=_input_ds, outputs=_output_ds,
+            emitter=_emitter,
+        )
+        _lineage_ctx.__enter__()
 
-    for msg in consumer:
-        raw_value = msg.value
-        try:
-            payload = json.loads(raw_value)
-        except json.JSONDecodeError:
-            payload = {"raw": raw_value}
+    try:
+        for msg in consumer:
+            raw_value = msg.value
+            try:
+                payload = json.loads(raw_value)
+            except json.JSONDecodeError:
+                payload = {"raw": raw_value}
 
-        payload["sink_received_at"] = datetime.now(timezone.utc).isoformat()
-        batch.append(payload)
+            payload["sink_received_at"] = datetime.now(timezone.utc).isoformat()
+            data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+            key = build_object_key(minio_prefix)
 
-        elapsed = time.monotonic() - batch_start
-        if len(batch) >= batch_size or elapsed >= batch_timeout_s:
-            flush_batch(minio_client, minio_bucket, minio_prefix,
-                        shard_depth, part_size, batch)
-            consumer.commit()
-            batch = []
-            batch_start = time.monotonic()
+            minio_client.put_object(
+                bucket_name=minio_bucket,
+                object_name=key,
+                data=BytesIO(data),
+                length=len(data),
+                content_type="application/json",
+            )
+
+            print(f"[SINK] Wrote feature event to minio://{minio_bucket}/{key}")
+    except Exception as exc:
+        if _LINEAGE_ENABLED:
+            _lineage_ctx.__exit__(type(exc), exc, exc.__traceback__)
+        raise
+    else:
+        if _LINEAGE_ENABLED:
+            _lineage_ctx.__exit__(None, None, None)
 
 
 if __name__ == "__main__":

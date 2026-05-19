@@ -1,0 +1,33 @@
+version: "1"
+name: pipeline-with-transforms
+
+source:
+  type: kafka_cdc
+  topic: streamforge.streamforge.user_events
+  bootstrap_servers: localhost:9092
+  consumer_group: test-group
+
+transforms:
+  - id: schema_guard
+    type: schema_evolution
+    column_aliases:
+      user_id: uid
+      event_type: type
+    on_breaking_change: dead_letter
+    dead_letter_topic: cdc.dead.letter
+
+  - id: keep_inserts
+    type: filter
+    condition: "op == 'c' and after.user_id != null"
+
+  - id: window_count
+    type: tumbling_window
+    key_by: user_id
+    window_size_seconds: 60
+    out_of_orderness_seconds: 5
+    aggregate: count
+
+sink:
+  type: kafka
+  topic: user.event.counts
+  bootstrap_servers: localhost:9092

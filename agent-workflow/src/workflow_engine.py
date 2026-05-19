@@ -6,6 +6,16 @@ from config_loader import ConfigLoader
 from communication import CommunicationManager
 
 
+# Optional lineage tracking — enabled when the lineage package is importable.
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+try:
+    from lineage.tracker import lineage_run, dataset as _lineage_dataset
+    from lineage.emitter import default_emitter as _lineage_default_emitter
+    _LINEAGE_ENABLED = True
+except ImportError:
+    _LINEAGE_ENABLED = False
+
+
 class WorkflowEngine:
     def __init__(self, config_path: str):
         self.config_loader = ConfigLoader(config_path)
@@ -67,7 +77,12 @@ class WorkflowEngine:
                     input_data['messages'] = messages
 
                 self.logger.info(f"Executing step: {action} on agent {agent_name}")
-                result = agent.execute_action(action, input_data)
+
+                if _LINEAGE_ENABLED:
+                    result = self._execute_step_with_lineage(agent, agent_name, action, input_data, step)
+                else:
+                    result = agent.execute_action(action, input_data)
+
                 self.logger.info(f"Step completed with result: {result}")
 
                 if 'output_to' in step:

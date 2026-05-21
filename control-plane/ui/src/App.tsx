@@ -1,17 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type SystemStatus } from "./api/client";
+import { api, AuthError, type SystemStatus } from "./api/client";
+import { clearToken, getToken } from "./auth";
 import { ArtifactTable } from "./components/ArtifactTable";
 import { Header } from "./components/Header";
+import { LoginPage } from "./LoginPage";
 import { LogPanel } from "./components/LogPanel";
 import { ServiceGrid } from "./components/ServiceGrid";
 
 type Tab = "logs" | "artifacts";
 
 export default function App() {
+  const [authed, setAuthed] = useState(() => getToken() !== "");
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedService, setSelectedService] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("logs");
+
+  function handleLogout() {
+    clearToken();
+    setAuthed(false);
+    setStatus(null);
+  }
 
   const refresh = useCallback(() => {
     setRefreshing(true);
@@ -21,15 +30,27 @@ export default function App() {
         setStatus(s);
         setSelectedService((prev) => prev ?? s.services[0]?.name ?? null);
       })
-      .catch(console.error)
+      .catch((err) => {
+        if (err instanceof AuthError) {
+          clearToken();
+          setAuthed(false);
+        } else {
+          console.error(err);
+        }
+      })
       .finally(() => setRefreshing(false));
   }, []);
 
   useEffect(() => {
+    if (!authed) return;
     refresh();
     const id = setInterval(refresh, 15_000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [authed, refresh]);
+
+  if (!authed) {
+    return <LoginPage onSuccess={() => setAuthed(true)} />;
+  }
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
@@ -38,10 +59,10 @@ export default function App() {
         checkedAt={status?.checked_at ?? null}
         onRefresh={refresh}
         refreshing={refreshing}
+        onLogout={handleLogout}
       />
 
       <main className="flex-1 overflow-hidden flex flex-col gap-4 p-6">
-        {/* service status grid */}
         <section>
           <h2 className="text-xs uppercase tracking-widest text-gray-600 mb-3">services</h2>
           {status ? (
@@ -55,7 +76,6 @@ export default function App() {
           )}
         </section>
 
-        {/* tabs */}
         <section className="flex-1 flex flex-col min-h-0 rounded-lg border border-gray-800 bg-gray-900 overflow-hidden">
           <div className="flex border-b border-gray-800">
             {(["logs", "artifacts"] as Tab[]).map((t) => (

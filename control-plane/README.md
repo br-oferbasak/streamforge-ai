@@ -51,10 +51,32 @@ npm install
 npm run dev    # proxies /api/* → localhost:8090
 ```
 
+## Authentication
+
+The control plane uses a **single shared secret** — suitable for local multi-user demos, not for production.
+
+Set `CP_SECRET` to enable auth; leave it unset to run open (handy for single-user local dev).
+
+```bash
+# docker compose
+CP_SECRET=my-demo-secret docker compose up --build
+
+# local dev
+export CP_SECRET=my-demo-secret
+uvicorn main:app --reload --port 8090
+```
+
+When `CP_SECRET` is set:
+- All `/api/v1/*` routes require `Authorization: Bearer <secret>`
+- The UI shows a login page and stores the token in `localStorage`
+- A "sign out" button clears the token and returns to the login screen
+- `/healthz` is always public (used by Docker health checks)
+
 ## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `CP_SECRET` | *(unset — open)* | Shared secret for demo auth |
 | `MINIO_ENDPOINT` | `http://localhost:9000` | MinIO S3 endpoint |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin` | MinIO secret key |

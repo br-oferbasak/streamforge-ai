@@ -1,4 +1,8 @@
+import { getToken } from "../auth";
+
 const BASE = "/api/v1";
+
+export class AuthError extends Error {}
 
 export interface ServiceStatus {
   name: string;
@@ -43,7 +47,10 @@ async function get<T>(path: string, params?: Record<string, string | number>): P
   if (params) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
   }
-  const res = await fetch(url.toString());
+  const token = getToken();
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(url.toString(), { headers });
+  if (res.status === 401) throw new AuthError("session expired");
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json() as Promise<T>;
 }

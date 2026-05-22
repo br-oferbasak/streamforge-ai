@@ -3,9 +3,10 @@ interface HeaderProps {
   checkedAt: string | null;
   onRefresh: () => void;
   refreshing: boolean;
+  onLogout: () => void;
 }
 
-export function Header({ healthy, checkedAt, onRefresh, refreshing }: HeaderProps) {
+export function Header({ healthy, checkedAt, onRefresh, refreshing, onLogout }: HeaderProps) {
   const badge =
     healthy === null
       ? { label: "checking…", cls: "bg-gray-700 text-gray-300" }
@@ -35,6 +36,12 @@ export function Header({ healthy, checkedAt, onRefresh, refreshing }: HeaderProp
           className="px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-40 transition-colors"
         >
           {refreshing ? "refreshing…" : "↺ refresh"}
+        </button>
+        <button
+          onClick={onLogout}
+          className="px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors"
+        >
+          sign out
         </button>
       </div>
     </header>

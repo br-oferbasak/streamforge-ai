@@ -11,6 +11,9 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-processed}
+      # Set CP_SECRET to require a shared secret on all /api/v1/* routes.
+      # Leave unset (or empty) to run open — useful for local single-user dev.
+      CP_SECRET: ${CP_SECRET:-}
 
   ui:
     image: node:20-alpine

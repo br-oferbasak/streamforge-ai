@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from auth import require_auth
 from routers import artifacts, logs, status
 
 app = FastAPI(
@@ -13,11 +14,13 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["GET"],
     allow_headers=["*"],
+    expose_headers=["WWW-Authenticate"],
 )
 
-app.include_router(status.router, prefix="/api/v1")
-app.include_router(logs.router, prefix="/api/v1")
-app.include_router(artifacts.router, prefix="/api/v1")
+_auth = [Depends(require_auth)]
+app.include_router(status.router, prefix="/api/v1", dependencies=_auth)
+app.include_router(logs.router, prefix="/api/v1", dependencies=_auth)
+app.include_router(artifacts.router, prefix="/api/v1", dependencies=_auth)
 
 
 @app.get("/healthz", include_in_schema=False)

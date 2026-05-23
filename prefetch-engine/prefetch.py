@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import time
 import json
@@ -9,6 +10,15 @@ from pathlib import Path
 from typing import List
 
 import metrics
+
+# Optional lineage tracking — enabled when the lineage package is importable.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    from lineage.tracker import lineage_run, minio_dataset, file_dataset
+    from lineage.emitter import default_emitter as _lineage_default_emitter
+    _LINEAGE_ENABLED = True
+except ImportError:  # pragma: no cover
+    _LINEAGE_ENABLED = False
 
 
 @dataclass
@@ -286,27 +296,40 @@ def main() -> None:
     manifest_dir = base / "manifest"
     cache_dir = base / "prefetch-cache"
     job_id = os.environ.get("STREAMFORGE_JOB_ID", _utc_run_id())
+    minio_bucket = _env("MINIO_BUCKET", "processed")
+    minio_prefix = _env("MINIO_PREFIX", "streamforge")
+    minio_ep = _env("MINIO_ENDPOINT", "minio:9000")
 
     print(f"[DEMO] using base directory: {base}")
 
-    candidates = _build_demo_manifest(manifest_dir)
-    hot_files = select_hot_files(candidates, top_n=3)
+    def _run() -> None:
+        candidates = _build_demo_manifest(manifest_dir)
+        hot_files = select_hot_files(candidates, top_n=3)
 
-    print("[DEMO] selected hot files (top 3 by score):")
-    for f in hot_files:
-        print(f"  - {f.uri} (recent_access_count={f.recent_access_count})")
+        print("[DEMO] selected hot files (top 3 by score):")
+        for f in hot_files:
+            print(f"  - {f.uri} (recent_access_count={f.recent_access_count})")
 
-    print(f"[DEMO] prefetching into cache: {cache_dir}")
-    prefetch_files(hot_files, cache_dir, job_id=job_id)
+        print(f"[DEMO] prefetching into cache: {cache_dir}")
+        prefetch_files(hot_files, cache_dir, job_id=job_id)
 
-    print("[DEMO] running simulated ML job")
-    run_simulated_ml_job(cache_dir, hot_files, job_id=job_id)
+        print("[DEMO] running simulated ML job")
+        run_simulated_ml_job(cache_dir, hot_files, job_id=job_id)
 
-    # Build and upload processed outputs (NDJSON).
-    records = build_processed_records(job_id=job_id, cache_dir=cache_dir, hot_files=hot_files)
-    upload_processed_records_to_minio(records)
+        records = build_processed_records(job_id=job_id, cache_dir=cache_dir, hot_files=hot_files)
+        upload_processed_records_to_minio(records)
 
-    metrics.push_metrics(job_id)
+        metrics.push_metrics(job_id)
+
+    if _LINEAGE_ENABLED:
+        _emitter = _lineage_default_emitter()
+        input_ds = [file_dataset(str(manifest_dir))]
+        output_ds = [minio_dataset(minio_bucket, f"{minio_prefix}/processed/{job_id}", minio_ep)]
+        with lineage_run("streamforge", "prefetch-engine", input_ds, output_ds,
+                         emitter=_emitter, run_id=job_id):
+            _run()
+    else:
+        _run()
 
 
 if __name__ == "__main__":

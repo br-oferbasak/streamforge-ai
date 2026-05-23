@@ -1,0 +1,12 @@
+version: "1"
+name: "Invalid Name With Spaces!"
+
+source:
+  type: kafka_cdc
+  topic: some.topic
+  bootstrap_servers: localhost:9092
+
+sink:
+  type: kafka
+  topic: out.topic
+  bootstrap_servers: localhost:9092

@@ -1,0 +1,23 @@
+version: "1"
+name: sliding-window-pipeline
+
+source:
+  type: kafka_cdc
+  topic: streamforge.streamforge.user_events
+  bootstrap_servers: localhost:9092
+
+transforms:
+  - id: event_rate_window
+    type: sliding_window
+    key_by: user_id
+    window_size_seconds: 300
+    slide_seconds: 60
+    out_of_orderness_seconds: 5
+    aggregate:
+      function: count
+      output_field: event_count
+
+sink:
+  type: redis
+  host: localhost
+  port: 6379

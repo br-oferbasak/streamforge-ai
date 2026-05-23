@@ -1,0 +1,19 @@
+name: prefetch-demo
+description: "Hot-file selection + local cache staging + simulated ML job"
+
+agents:
+  - name: prefetch_agent
+    type: prefetch
+    config:
+      top_n: 3
+      simulate_latency_s: 0.05
+      cache_dir: /tmp/streamforge-demo/prefetch-cache
+
+steps:
+  - agent: prefetch_agent
+    action: run_prefetch
+    on_error: continue
+    lineage_inputs:
+      - "file:///tmp/streamforge-demo/manifest"
+    lineage_outputs:
+      - "file:///tmp/streamforge-demo/prefetch-cache"

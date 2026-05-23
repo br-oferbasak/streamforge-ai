@@ -1,0 +1,7 @@
+version: "1"
+name: no-source-pipeline
+
+sink:
+  type: kafka
+  topic: out.topic
+  bootstrap_servers: localhost:9092

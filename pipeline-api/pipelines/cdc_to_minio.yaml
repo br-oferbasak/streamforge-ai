@@ -1,0 +1,51 @@
+name: cdc-to-minio
+description: "Full CDC pipeline: MySQL binlog → Kafka aggregation → MinIO feature store"
+
+agents:
+  - name: data_ingestion_agent
+    type: data_ingestion
+    config:
+      source: mysql
+      host: localhost
+      port: 3306
+      database: streamforge
+
+  - name: stream_processor_agent
+    type: stream_processor
+    config:
+      mode: flink
+      parallelism: 2
+      window_size_seconds: 60
+
+  - name: storage_sink_agent
+    type: storage_sink
+    config:
+      destination: minio
+      bucket: processed
+      prefix: streamforge/features
+
+steps:
+  - agent: data_ingestion_agent
+    action: start_ingestion
+    on_error: continue
+    lineage_inputs: []
+    lineage_outputs:
+      - "kafka://kafka:9092:debezium.mysql.streamforge.user_events"
+
+  - agent: stream_processor_agent
+    action: process_stream
+    on_error: continue
+    lineage_inputs:
+      - "kafka://kafka:9092:debezium.mysql.streamforge.user_events"
+    lineage_outputs:
+      - "kafka://kafka:9092:streamforge.features.user_event_counts"
+    output_to:
+      storage_sink_agent: processed_data
+
+  - agent: storage_sink_agent
+    action: write_to_storage
+    on_error: continue
+    lineage_inputs:
+      - "kafka://kafka:9092:streamforge.features.user_event_counts"
+    lineage_outputs:
+      - "s3://minio:9000/processed:streamforge/features"

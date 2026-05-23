@@ -1,0 +1,29 @@
+services:
+  api:
+    build: ./api
+    ports:
+      - "8090:8090"
+    volumes:
+      # Allows the API to query the host Docker daemon
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://localhost:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-processed}
+      # Set CP_SECRET to require a shared secret on all /api/v1/* routes.
+      # Leave unset (or empty) to run open — useful for local single-user dev.
+      CP_SECRET: ${CP_SECRET:-}
+
+  ui:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./ui:/app
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_BASE: http://api:8090
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - api

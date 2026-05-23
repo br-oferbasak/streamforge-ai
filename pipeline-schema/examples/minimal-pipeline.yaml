@@ -1,0 +1,12 @@
+version: "1"
+name: minimal-cdc-to-kafka
+
+source:
+  type: kafka_cdc
+  topic: streamforge.streamforge.customers
+  bootstrap_servers: localhost:9092
+
+sink:
+  type: kafka
+  topic: user.event.counts
+  bootstrap_servers: localhost:9092

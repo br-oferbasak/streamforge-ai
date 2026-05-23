@@ -1,0 +1,609 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://streamforge.ai/schemas/pipeline/v1",
+  "title": "StreamForge Pipeline",
+  "description": "Declarative definition of a StreamForge data pipeline: source → transforms → sink, with optional prefetch.",
+  "type": "object",
+  "required": ["version", "name", "source", "sink"],
+  "additionalProperties": false,
+  "properties": {
+
+    "version": {
+      "type": "string",
+      "enum": ["1"],
+      "description": "Schema version — must be \"1\"."
+    },
+
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "minLength": 2,
+      "maxLength": 64,
+      "description": "Pipeline identifier — lowercase letters, digits, and hyphens."
+    },
+
+    "description": {
+      "type": "string",
+      "maxLength": 512
+    },
+
+    "labels": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Arbitrary key/value tags for discovery and grouping."
+    },
+
+    "source": {
+      "$ref": "#/definitions/Source"
+    },
+
+    "transforms": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Transform" },
+      "description": "Ordered list of transforms applied between source and sink.",
+      "default": []
+    },
+
+    "sink": {
+      "$ref": "#/definitions/Sink"
+    },
+
+    "prefetch": {
+      "$ref": "#/definitions/Prefetch"
+    }
+  },
+
+  "definitions": {
+
+    "EnvRef": {
+      "description": "A literal value or an env-var reference like ${MY_VAR} or ${MY_VAR:-default}.",
+      "type": "string"
+    },
+
+    "KafkaCommon": {
+      "type": "object",
+      "required": ["bootstrap_servers"],
+      "properties": {
+        "bootstrap_servers": {
+          "$ref": "#/definitions/EnvRef",
+          "description": "Comma-separated list of host:port pairs."
+        },
+        "security_protocol": {
+          "type": "string",
+          "enum": ["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"],
+          "default": "PLAINTEXT"
+        },
+        "sasl": {
+          "type": "object",
+          "required": ["mechanism", "username", "password"],
+          "additionalProperties": false,
+          "properties": {
+            "mechanism": { "type": "string", "enum": ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"] },
+            "username": { "$ref": "#/definitions/EnvRef" },
+            "password": { "$ref": "#/definitions/EnvRef" }
+          }
+        }
+      }
+    },
+
+    "S3Compat": {
+      "type": "object",
+      "required": ["endpoint", "access_key", "secret_key"],
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": { "$ref": "#/definitions/EnvRef", "description": "host:port, e.g. minio:9000" },
+        "access_key": { "$ref": "#/definitions/EnvRef" },
+        "secret_key": { "$ref": "#/definitions/EnvRef" },
+        "secure": { "type": "boolean", "default": false }
+      }
+    },
+
+    "Source": {
+      "description": "Where the pipeline reads data from.",
+      "type": "object",
+      "required": ["type"],
+      "oneOf": [
+        { "$ref": "#/definitions/SourceKafkaCdc" },
+        { "$ref": "#/definitions/SourceMysqlCdc" },
+        { "$ref": "#/definitions/SourceKafka" }
+      ]
+    },
+
+    "SourceKafkaCdc": {
+      "description": "Kafka topic carrying Debezium CDC envelopes.",
+      "type": "object",
+      "required": ["type", "topic", "bootstrap_servers"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "kafka_cdc" },
+        "topic": { "type": "string", "description": "Debezium output topic, e.g. streamforge.streamforge.customers." },
+        "bootstrap_servers": { "$ref": "#/definitions/EnvRef" },
+        "consumer_group": { "type": "string", "default": "streamforge-pipeline" },
+        "security_protocol": { "type": "string", "enum": ["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"], "default": "PLAINTEXT" },
+        "sasl": { "$ref": "#/definitions/KafkaCommon/properties/sasl" },
+        "start_offset": { "type": "string", "enum": ["earliest", "latest", "committed"], "default": "committed" }
+      }
+    },
+
+    "SourceMysqlCdc": {
+      "description": "Direct MySQL CDC source (Debezium embedded or Flink CDC connector).",
+      "type": "object",
+      "required": ["type", "connector"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "mysql_cdc" },
+        "connector": {
+          "type": "object",
+          "required": ["hostname", "database", "tables"],
+          "additionalProperties": false,
+          "properties": {
+            "hostname": { "$ref": "#/definitions/EnvRef" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 3306 },
+            "user": { "$ref": "#/definitions/EnvRef", "default": "debezium" },
+            "password": { "$ref": "#/definitions/EnvRef" },
+            "server_id": { "type": "integer", "minimum": 1, "description": "Unique replication server ID." },
+            "server_name": { "type": "string", "description": "Logical name prefix for topic names." },
+            "database": { "type": "string" },
+            "tables": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[\\w]+\\.[\\w]+$" },
+              "minItems": 1,
+              "description": "Fully-qualified table names: schema.table."
+            },
+            "snapshot_mode": { "type": "string", "enum": ["initial", "schema_only", "never"], "default": "initial" },
+            "include_schema_changes": { "type": "boolean", "default": true },
+            "schema_history_topic": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "SourceKafka": {
+      "description": "Plain Kafka topic (non-CDC, arbitrary JSON or Avro messages).",
+      "type": "object",
+      "required": ["type", "topic", "bootstrap_servers"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "kafka" },
+        "topic": { "type": "string" },
+        "bootstrap_servers": { "$ref": "#/definitions/EnvRef" },
+        "consumer_group": { "type": "string", "default": "streamforge-pipeline" },
+        "format": { "type": "string", "enum": ["json", "avro", "protobuf"], "default": "json" },
+        "security_protocol": { "type": "string", "enum": ["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"], "default": "PLAINTEXT" },
+        "sasl": { "$ref": "#/definitions/KafkaCommon/properties/sasl" },
+        "start_offset": { "type": "string", "enum": ["earliest", "latest", "committed"], "default": "committed" }
+      }
+    },
+
+    "Transform": {
+      "description": "A single processing step in the pipeline.",
+      "type": "object",
+      "required": ["id", "type"],
+      "oneOf": [
+        { "$ref": "#/definitions/TransformSchemaEvolution" },
+        { "$ref": "#/definitions/TransformFilter" },
+        { "$ref": "#/definitions/TransformTumblingWindow" },
+        { "$ref": "#/definitions/TransformSlidingWindow" },
+        { "$ref": "#/definitions/TransformMap" },
+        { "$ref": "#/definitions/TransformDedup" }
+      ]
+    },
+
+    "TransformBase": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "description": "Unique step identifier within the pipeline."
+        },
+        "description": { "type": "string" },
+        "disabled": { "type": "boolean", "default": false }
+      }
+    },
+
+    "TransformSchemaEvolution": {
+      "description": "Detects CDC schema changes, normalises field renames, routes breaking changes to a dead-letter queue.",
+      "allOf": [
+        { "$ref": "#/definitions/TransformBase" },
+        {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "id": {},
+            "description": {},
+            "disabled": {},
+            "type": { "type": "string", "const": "schema_evolution" },
+            "column_aliases": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Map of new_name → old_name for field rename normalisation.",
+              "examples": [{ "user_id": "uid", "event_type": "type", "created_at": "ts" }]
+            },
+            "on_breaking_change": {
+              "type": "string",
+              "enum": ["dead_letter", "fail", "skip"],
+              "default": "dead_letter",
+              "description": "Action when a BREAKING schema change is detected."
+            },
+            "dead_letter_topic": {
+              "type": "string",
+              "description": "Kafka topic for dead-letter events. Required when on_breaking_change is dead_letter."
+            },
+            "dead_letter_bootstrap_servers": {
+              "$ref": "#/definitions/EnvRef",
+              "description": "Kafka bootstrap servers for the DLQ. Defaults to the source bootstrap_servers."
+            }
+          },
+          "if": {
+            "properties": { "on_breaking_change": { "const": "dead_letter" } },
+            "required": ["on_breaking_change"]
+          },
+          "then": {
+            "required": ["dead_letter_topic"]
+          }
+        }
+      ]
+    },
+
+    "TransformFilter": {
+      "description": "Keeps only records where `condition` evaluates to true.",
+      "allOf": [
+        { "$ref": "#/definitions/TransformBase" },
+        {
+          "type": "object",
+          "required": ["type", "condition"],
+          "additionalProperties": false,
+          "properties": {
+            "id": {},
+            "description": {},
+            "disabled": {},
+            "type": { "type": "string", "const": "filter" },
+            "condition": {
+              "type": "string",
+              "description": "Boolean expression evaluated against each record, e.g. \"op == 'c' and after.user_id != null\"."
+            },
+            "on_drop": {
+              "type": "string",
+              "enum": ["discard", "dead_letter"],
+              "default": "discard"
+            },
+            "dead_letter_topic": { "type": "string" }
+          }
+        }
+      ]
+    },
+
+    "TransformTumblingWindow": {
+      "description": "Groups records by key and aggregates over non-overlapping event-time windows.",
+      "allOf": [
+        { "$ref": "#/definitions/TransformBase" },
+        {
+          "type": "object",
+          "required": ["type", "key_by", "window_size_seconds", "aggregate"],
+          "additionalProperties": false,
+          "properties": {
+            "id": {},
+            "description": {},
+            "disabled": {},
+            "type": { "type": "string", "const": "tumbling_window" },
+            "key_by": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+              ],
+              "description": "Field name(s) to group by."
+            },
+            "window_size_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400,
+              "description": "Window duration in seconds."
+            },
+            "out_of_orderness_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 5,
+              "description": "Maximum event-time lateness tolerated before the watermark advances."
+            },
+            "aggregate": {
+              "$ref": "#/definitions/AggregateSpec"
+            }
+          }
+        }
+      ]
+    },
+
+    "TransformSlidingWindow": {
+      "description": "Overlapping event-time windows (hop windows).",
+      "allOf": [
+        { "$ref": "#/definitions/TransformBase" },
+        {
+          "type": "object",
+          "required": ["type", "key_by", "window_size_seconds", "slide_seconds", "aggregate"],
+          "additionalProperties": false,
+          "properties": {
+            "id": {},
+            "description": {},
+            "disabled": {},
+            "type": { "type": "string", "const": "sliding_window" },
+            "key_by": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+              ]
+            },
+            "window_size_seconds": { "type": "integer", "minimum": 1 },
+            "slide_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "How often a new window starts. Must be ≤ window_size_seconds."
+            },
+            "out_of_orderness_seconds": { "type": "integer", "minimum": 0, "default": 5 },
+            "aggregate": { "$ref": "#/definitions/AggregateSpec" }
+          }
+        }
+      ]
+    },
+
+    "TransformMap": {
+      "description": "Applies a field-level projection or expression to every record.",
+      "allOf": [
+        { "$ref": "#/definitions/TransformBase" },
+        {
+          "type": "object",
+          "required": ["type", "fields"],
+          "additionalProperties": false,
+          "properties": {
+            "id": {},
+            "description": {},
+            "disabled": {},
+            "type": { "type": "string", "const": "map" },
+            "fields": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Map of output_field → expression (e.g. \"after.user_id\", \"event_count * 2\").",
+              "minProperties": 1
+            }
+          }
+        }
+      ]
+    },
+
+    "TransformDedup": {
+      "description": "Removes duplicate records within a time window based on a key.",
+      "allOf": [
+        { "$ref": "#/definitions/TransformBase" },
+        {
+          "type": "object",
+          "required": ["type", "key_by", "window_size_seconds"],
+          "additionalProperties": false,
+          "properties": {
+            "id": {},
+            "description": {},
+            "disabled": {},
+            "type": { "type": "string", "const": "dedup" },
+            "key_by": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+              ]
+            },
+            "window_size_seconds": { "type": "integer", "minimum": 1 },
+            "keep": { "type": "string", "enum": ["first", "last"], "default": "first" }
+          }
+        }
+      ]
+    },
+
+    "AggregateSpec": {
+      "description": "What to compute over the window.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": ["count"],
+          "description": "Shorthand for counting records."
+        },
+        {
+          "type": "object",
+          "required": ["function"],
+          "additionalProperties": false,
+          "properties": {
+            "function": {
+              "type": "string",
+              "enum": ["count", "sum", "avg", "min", "max", "count_distinct"]
+            },
+            "field": {
+              "type": "string",
+              "description": "Source field to aggregate (not needed for count)."
+            },
+            "output_field": {
+              "type": "string",
+              "description": "Name of the output field. Defaults to function_field."
+            }
+          }
+        }
+      ]
+    },
+
+    "Sink": {
+      "description": "Where the pipeline writes output.",
+      "type": "object",
+      "required": ["type"],
+      "oneOf": [
+        { "$ref": "#/definitions/SinkKafka" },
+        { "$ref": "#/definitions/SinkIceberg" },
+        { "$ref": "#/definitions/SinkMinio" },
+        { "$ref": "#/definitions/SinkRedis" }
+      ]
+    },
+
+    "SinkKafka": {
+      "description": "Publish aggregated records to a Kafka topic.",
+      "type": "object",
+      "required": ["type", "topic", "bootstrap_servers"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "kafka" },
+        "topic": { "type": "string" },
+        "bootstrap_servers": { "$ref": "#/definitions/EnvRef" },
+        "format": { "type": "string", "enum": ["json", "avro"], "default": "json" },
+        "compression": { "type": "string", "enum": ["none", "gzip", "snappy", "lz4", "zstd"], "default": "none" },
+        "security_protocol": { "type": "string", "enum": ["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"], "default": "PLAINTEXT" },
+        "sasl": { "$ref": "#/definitions/KafkaCommon/properties/sasl" }
+      }
+    },
+
+    "SinkIceberg": {
+      "description": "Write records to an Apache Iceberg table (supports MinIO / S3).",
+      "type": "object",
+      "required": ["type", "catalog_type", "warehouse", "database", "table"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "iceberg" },
+        "catalog_type": {
+          "type": "string",
+          "enum": ["hadoop", "hive", "rest"],
+          "description": "Iceberg catalog implementation."
+        },
+        "catalog_uri": {
+          "$ref": "#/definitions/EnvRef",
+          "description": "REST or Hive metastore URI. Required when catalog_type is rest or hive."
+        },
+        "warehouse": {
+          "$ref": "#/definitions/EnvRef",
+          "description": "Warehouse root URI, e.g. s3a://my-bucket/warehouse or file:///tmp/warehouse."
+        },
+        "database": { "type": "string" },
+        "table": { "type": "string" },
+        "s3": { "$ref": "#/definitions/S3Compat" },
+        "write_format": { "type": "string", "enum": ["parquet", "orc", "avro"], "default": "parquet" },
+        "partition_by": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Partition spec field names (e.g. [\"days(window_start_ms)\"])."
+        }
+      },
+      "if": {
+        "properties": { "catalog_type": { "enum": ["rest", "hive"] } },
+        "required": ["catalog_type"]
+      },
+      "then": {
+        "required": ["catalog_uri"]
+      }
+    },
+
+    "SinkMinio": {
+      "description": "Write records as NDJSON files to a MinIO / S3-compatible bucket.",
+      "type": "object",
+      "required": ["type", "bucket", "prefix", "s3"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "minio" },
+        "bucket": { "type": "string" },
+        "prefix": { "type": "string", "description": "Object key prefix, e.g. streamforge/features." },
+        "s3": { "$ref": "#/definitions/S3Compat" },
+        "format": { "type": "string", "enum": ["ndjson", "json", "parquet"], "default": "ndjson" },
+        "partition_pattern": {
+          "type": "string",
+          "default": "YYYY/MM/DD/HH",
+          "description": "Date-time partition pattern appended to prefix."
+        },
+        "max_shard_rows": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Roll over to a new file after this many rows."
+        }
+      }
+    },
+
+    "SinkRedis": {
+      "description": "Write latest feature snapshots to the Redis online store.",
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "redis" },
+        "host": { "$ref": "#/definitions/EnvRef", "default": "localhost" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 6379 },
+        "db": { "type": "integer", "minimum": 0, "default": 0 },
+        "password": { "$ref": "#/definitions/EnvRef" },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 604800,
+          "description": "Key TTL in seconds (default: 7 days)."
+        },
+        "history_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 86400,
+          "description": "TTL for the per-user history sorted set (default: 24 h)."
+        },
+        "max_history_windows": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2880
+        }
+      }
+    },
+
+    "Prefetch": {
+      "description": "Optional prefetch cache configuration — stages hot feature files locally before ML jobs run.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "cache_dir": {
+          "type": "string",
+          "default": "/tmp/streamforge/prefetch-cache",
+          "description": "Local directory where hot files are staged."
+        },
+        "top_n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 50,
+          "description": "Number of top-scored files to prefetch."
+        },
+        "source": {
+          "type": "object",
+          "required": ["bucket", "prefix"],
+          "additionalProperties": false,
+          "properties": {
+            "bucket": { "type": "string", "default": "processed" },
+            "prefix": { "type": "string", "default": "streamforge/features" },
+            "max_files": { "type": "integer", "minimum": 1, "default": 500 },
+            "s3": { "$ref": "#/definitions/S3Compat" }
+          }
+        },
+        "scoring": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "access_count_weight": {
+              "type": "number",
+              "minimum": 0,
+              "default": 1.0,
+              "description": "Weight applied to recent_access_count in the scoring formula."
+            },
+            "recency_weight": {
+              "type": "number",
+              "minimum": 0,
+              "default": 1e-6,
+              "description": "Weight applied to last_access_epoch (seconds). Smaller values de-prioritise recency."
+            }
+          }
+        },
+        "simulated_latency_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Artificial delay per file fetch (useful for benchmarking)."
+        }
+      }
+    }
+  }
+}

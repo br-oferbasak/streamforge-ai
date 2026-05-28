@@ -58,6 +58,7 @@ from store import FeatureStore
 from entities import Entity, ValueType
 from feature_views import BatchFeatureView, StreamFeatureView, OnDemandFeatureView, Feature, DataSource
 from feature_service import FeatureService
+from config import StoreConfig
 
 __all__ = [
     "FeatureStore",
@@ -69,4 +70,5 @@ __all__ = [
     "Feature",
     "DataSource",
     "FeatureService",
+    "StoreConfig",
 ]

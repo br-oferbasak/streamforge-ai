@@ -52,6 +52,12 @@ from feature_views import BatchFeatureView, StreamFeatureView, OnDemandFeatureVi
 from feature_service import FeatureService
 
 try:
+    from config import StoreConfig
+    _CONFIG_AVAILABLE = True
+except ImportError:
+    _CONFIG_AVAILABLE = False
+
+try:
     from offline_batch_reader import OfflineBatchReader
     from online_lowlatency_reader import OnlineFeatureReader
     _READERS_AVAILABLE = True
@@ -203,9 +209,15 @@ class FeatureStore:
         self,
         project: str = "streamforge",
         repo_path: Optional[str] = None,
+        config: Optional["StoreConfig"] = None,
     ) -> None:
-        self.project = project
-        self.repo_path = Path(repo_path) if repo_path else None
+        if config is not None:
+            self.project = config.project
+            self.repo_path = config.registry_path().parent
+        else:
+            self.project = project
+            self.repo_path = Path(repo_path) if repo_path else None
+        self._config = config
         self._registry = Registry()
         self._online_reader: Optional[object] = None
         self._offline_reader: Optional[object] = None

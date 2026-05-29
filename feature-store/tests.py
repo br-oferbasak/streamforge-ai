@@ -403,5 +403,163 @@ class TestTectonCompat:
         assert s.get_feature_view("decorated_stats") is decorated_stats
 
 
+# ---------------------------------------------------------------------------
+# StoreConfig tests
+# ---------------------------------------------------------------------------
+
+class TestStoreConfig:
+    def test_defaults(self):
+        from config import StoreConfig, OnlineStoreConfig, OfflineStoreConfig
+        cfg = StoreConfig()
+        assert cfg.project == "streamforge"
+        assert cfg.online_store.type == "redis"
+        assert cfg.offline_store.type == "minio"
+        assert cfg.online_store.port == 6379
+
+    def test_save_and_reload(self, tmp_path):
+        from config import StoreConfig
+        cfg = StoreConfig(project="myproject")
+        cfg.online_store.host = "redis-prod"
+        cfg.offline_store.bucket = "ml-features"
+        yaml_path = tmp_path / "feature_store.yaml"
+        cfg.save(yaml_path)
+        assert yaml_path.exists()
+        loaded = StoreConfig.from_yaml(yaml_path)
+        assert loaded.project == "myproject"
+        assert loaded.online_store.host == "redis-prod"
+        assert loaded.offline_store.bucket == "ml-features"
+
+    def test_from_yaml_missing_file(self, tmp_path):
+        from config import StoreConfig
+        with pytest.raises(FileNotFoundError):
+            StoreConfig.from_yaml(tmp_path / "nonexistent.yaml")
+
+    def test_partial_yaml(self, tmp_path):
+        from config import StoreConfig
+        yaml_path = tmp_path / "feature_store.yaml"
+        yaml_path.write_text("project: partial\n")
+        cfg = StoreConfig.from_yaml(yaml_path)
+        assert cfg.project == "partial"
+        assert cfg.online_store.type == "redis"
+
+    def test_registry_path_relative(self, tmp_path):
+        from config import StoreConfig
+        cfg = StoreConfig(registry="registry.json")
+        path = cfg.registry_path(relative_to=tmp_path)
+        assert path == tmp_path / "registry.json"
+
+    def test_repr(self):
+        from config import StoreConfig
+        cfg = StoreConfig()
+        r = repr(cfg)
+        assert "streamforge" in r
+        assert "redis" in r
+
+    def test_store_accepts_config(self, tmp_path):
+        from config import StoreConfig
+        cfg = StoreConfig(project="cfg-project")
+        store = FeatureStore(config=cfg)
+        assert store.project == "cfg-project"
+
+
+# ---------------------------------------------------------------------------
+# CLI tests
+# ---------------------------------------------------------------------------
+
+class TestCLI:
+    def test_init_creates_yaml(self, tmp_path):
+        from cli import main
+        import os
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            rc = main(["init", "--project", "cli-test"])
+            assert rc == 0
+            assert (tmp_path / "feature_store.yaml").exists()
+        finally:
+            os.chdir(orig)
+
+    def test_init_no_overwrite_without_force(self, tmp_path):
+        from cli import main
+        import os
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            main(["init"])
+            rc = main(["init"])
+            assert rc == 1
+        finally:
+            os.chdir(orig)
+
+    def test_init_force_overwrites(self, tmp_path):
+        from cli import main
+        import os
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            main(["init", "--project", "first"])
+            rc = main(["init", "--project", "second", "--force"])
+            assert rc == 0
+            from config import StoreConfig
+            cfg = StoreConfig.from_yaml(tmp_path / "feature_store.yaml")
+            assert cfg.project == "second"
+        finally:
+            os.chdir(orig)
+
+    def test_apply_and_list(self, tmp_path):
+        from cli import main
+        import os
+        repo = tmp_path / "feature_repo.py"
+        repo.write_text(
+            "import sys, os; sys.path.insert(0, os.path.dirname(__file__))\n"
+            "from entities import Entity\n"
+            "from feature_views import BatchFeatureView, Feature, DataSource\n"
+            "user = Entity(name='user', join_key='user_id')\n"
+            "stats = BatchFeatureView(\n"
+            "    name='stats', entities=[user],\n"
+            "    features=[Feature.int('count')], source=DataSource.minio(),\n"
+            ")\n"
+        )
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            rc = main(["apply", str(repo)])
+            assert rc == 0
+        finally:
+            os.chdir(orig)
+
+    def test_apply_missing_file(self, tmp_path):
+        from cli import main
+        rc = main(["apply", str(tmp_path / "nonexistent.py")])
+        assert rc == 1
+
+    def test_stats_no_config(self, tmp_path):
+        from cli import main
+        import os
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            rc = main(["stats"])
+            assert rc == 0
+        finally:
+            os.chdir(orig)
+
+    def test_no_command_returns_nonzero(self):
+        from cli import main
+        rc = main([])
+        assert rc == 1
+
+    def test_materialize_bad_date(self, tmp_path):
+        from cli import main
+        import os
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            rc = main(["materialize", "--start", "bad", "--end", "2026-05-25"])
+            assert rc == 1
+        finally:
+            os.chdir(orig)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

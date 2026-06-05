@@ -161,6 +161,12 @@
                                 </filter>
                             </filters>
                             <transformers>
+                                <!--
+                                  Default main class: CdcUserEventCountJob (streaming pipeline).
+                                  To run the maintenance job:
+                                    java -cp stream-processor-*.jar \
+                                         ai.streamforge.processor.maintenance.IcebergMaintenanceJob
+                                -->
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>ai.streamforge.processor.CdcUserEventCountJob</mainClass>
                                 </transformer>

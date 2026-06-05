@@ -2,7 +2,7 @@
 
 # StreamForge AI
 
-## Project Overview
+## 1. Project Overview
 
 StreamForge AI is a real-time data pipeline platform for AI and analytics workloads. It focuses on:
 
@@ -11,7 +11,7 @@ StreamForge AI is a real-time data pipeline platform for AI and analytics worklo
 - object-storage-based data sinking
 - storage-aware prefetching for ML workloads
 
-## Motivation
+## 2. Motivation
 
 - Provide a minimal but realistic open-source AI data pipeline
 - Support local development and demo environments
@@ -90,25 +90,46 @@ Planned next:
 - [x] Iceberg sink support (optional)
 
 ### v0.3 Hardening + integrations
-- [ ] Schema evolution handling
-- [ ] Metrics and observability
-- [ ] Benchmark scenarios
-- [ ] Training-job integration example
-- [ ] Backfill / replay tooling for historical reprocessing
-- [ ] Data quality checks (basic validation + drift signals)
-- [ ] Cost/performance tuning guide (Flink, Kafka, MinIO, Iceberg)
+- [x] Schema evolution handling
+- [x] Metrics and observability
+- [x] Benchmark scenarios
+- [x] Training-job integration example
+- [x] Backfill / replay tooling for historical reprocessing
+- [x] Data quality checks (basic validation + drift signals)
+- [x] Cost/performance tuning guide (Flink, Kafka, MinIO, Iceberg)
 
 ### v0.4 Lakehouse + governance
-- [ ] Iceberg-first sink mode (partitioning, compaction, snapshots)
-- [ ] Table/catalog integration (REST catalog or Hive Metastore)
-- [ ] Data lineage basics (job -> dataset -> feature artifacts)
-- [ ] Access patterns for offline/online features (example layouts)
+- [x] Iceberg-first sink mode (partitioning, compaction, snapshots)
+- [x] Table/catalog integration (REST catalog or Hive Metastore)
+- [x] Data lineage basics (job -> dataset -> feature artifacts)
+- [x] Access patterns for offline/online features (example layouts)
 
 ### v0.5 Platformization
-- [ ] Pipeline configuration as code (YAML) + validation
-- [ ] Simple control-plane API for starting/stopping pipelines
-- [ ] Web UI for demo environments (status, logs, artifacts)
-- [ ] Basic authn/authz for local multi-user demos
+- [x] Pipeline configuration as code (YAML) + validation
+- [x] Simple control-plane API for starting/stopping pipelines
+- [x] Web UI for demo environments (status, logs, artifacts)
+- [x] Basic authn/authz for local multi-user demos
+
+### v0.6 Expanded sources & feature serving
+- [ ] Multi-source CDC support (PostgreSQL, MongoDB)
+- [ ] Feature store integration (Feast, Tecton-compatible interface)
+- [ ] Online feature serving API with caching
+- [ ] Schema registry integration (Confluent Schema Registry or Apicurio)
+- [ ] Stream-to-batch joins (Flink with Iceberg dimension tables)
+
+### v0.7 ML/AI deeper integration
+- [ ] Real-time feature drift detection & alerting
+- [ ] Streaming windowed feature examples (rolling aggregates, sessionization)
+- [ ] Real-time inference pipeline example (Flink + model server)
+- [ ] Training data sampling/downsampling for active learning
+- [ ] Metadata catalog for features & pipelines (OpenLineage/Marquez)
+
+### v0.8 Enterprise readiness
+- [ ] Kubernetes operator for cluster deployment
+- [ ] Secrets management (Vault integration or Kubernetes Secrets)
+- [ ] Fine-grained RBAC for pipelines/datasets
+- [ ] Audit logging (API, job, and data access events)
+- [ ] High-availability mode for control plane & critical services
 
 ### Roadmap Links
 - GitHub issues: https://github.com/cchenax/streamforge-ai/issues

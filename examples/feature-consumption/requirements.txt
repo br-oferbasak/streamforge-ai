@@ -1,0 +1,13 @@
+# Core — required for all backends
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Offline: Iceberg backend (optional)
+pyiceberg[s3fs,pyarrow]>=0.6.0
+pyarrow>=14.0.0
+
+# Online: MinIO serving layout
+minio>=7.2.0
+
+# Online: Redis L1 cache
+redis>=5.0.0

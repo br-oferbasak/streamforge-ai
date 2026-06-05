@@ -2,10 +2,13 @@ package ai.streamforge.processor;
 
 import ai.streamforge.processor.deserialization.SchemaAwareCdcDeserializationSchema;
 import ai.streamforge.processor.deserialization.SchemaEvolutionFilter;
+import ai.streamforge.processor.drift.DriftSignal;
+import ai.streamforge.processor.drift.DriftSignalFunction;
 import ai.streamforge.processor.model.CdcEvent;
 import ai.streamforge.processor.model.DeadLetterEvent;
 import ai.streamforge.processor.model.UserEventCount;
 import ai.streamforge.processor.serialization.DeadLetterEventSerializationSchema;
+import ai.streamforge.processor.serialization.DriftSignalSerializationSchema;
 import ai.streamforge.processor.serialization.UserEventCountSerializationSchema;
 import ai.streamforge.processor.sink.IcebergSinkFactory;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
@@ -64,16 +67,18 @@ public class CdcUserEventCountJob {
     private static final Logger LOG = LoggerFactory.getLogger(CdcUserEventCountJob.class);
 
     public static void main(String[] args) throws Exception {
-        String bootstrapServers      = env("KAFKA_BOOTSTRAP_SERVERS",  "localhost:9092");
-        String sourceTopic           = env("KAFKA_SOURCE_TOPIC",       "cdc.streamforge.user_events");
-        String sinkTopic             = env("KAFKA_SINK_TOPIC",         "user.event.counts");
-        String dlqTopic              = env("KAFKA_DLQ_TOPIC",          "cdc.dead.letter");
-        String consumerGroup         = env("KAFKA_CONSUMER_GROUP",     "flink-cdc-user-event-count");
+        String bootstrapServers      = env("KAFKA_BOOTSTRAP_SERVERS",    "localhost:9092");
+        String sourceTopic           = env("KAFKA_SOURCE_TOPIC",         "cdc.streamforge.user_events");
+        String sinkTopic             = env("KAFKA_SINK_TOPIC",           "user.event.counts");
+        String dlqTopic              = env("KAFKA_DLQ_TOPIC",            "cdc.dead.letter");
+        String driftTopic            = env("KAFKA_DRIFT_SIGNALS_TOPIC",  "feature.drift.signals");
+        String consumerGroup         = env("KAFKA_CONSUMER_GROUP",       "flink-cdc-user-event-count");
         long   windowSizeSeconds     = Long.parseLong(env("WINDOW_SIZE_SECONDS",      "60"));
         long   outOfOrdernessSeconds = Long.parseLong(env("OUT_OF_ORDERNESS_SECONDS", "5"));
 
-        LOG.info("Starting CdcUserEventCountJob: source={}, sink={}, dlq={}, window={}s",
-                sourceTopic, sinkTopic, dlqTopic.isBlank() ? "disabled" : dlqTopic, windowSizeSeconds);
+        LOG.info("Starting CdcUserEventCountJob: source={}, sink={}, dlq={}, drift={}, window={}s",
+                sourceTopic, sinkTopic, dlqTopic.isBlank() ? "disabled" : dlqTopic,
+                driftTopic.isBlank() ? "disabled" : driftTopic, windowSizeSeconds);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(30_000);
@@ -134,6 +139,27 @@ public class CdcUserEventCountJob {
                 .build();
 
         counts.sinkTo(sink).name("Kafka Sink: " + sinkTopic);
+
+        // ── Drift signal aggregation ─────────────────────────────────────────
+        // Re-key by windowStartMs so all users from the same window are co-located,
+        // then flush a per-window distribution snapshot after the window closes.
+        if (!driftTopic.isBlank()) {
+            long allowedLatenessMs = outOfOrdernessSeconds * 1_000 * 2; // 2× watermark lag
+            DataStream<DriftSignal> driftSignals = counts
+                    .keyBy(e -> e.windowStartMs)
+                    .process(new DriftSignalFunction(allowedLatenessMs))
+                    .name("Drift Signal Aggregator");
+
+            KafkaSink<DriftSignal> driftSink = KafkaSink.<DriftSignal>builder()
+                    .setBootstrapServers(bootstrapServers)
+                    .setRecordSerializer(
+                            KafkaRecordSerializationSchema.<DriftSignal>builder()
+                                    .setTopic(driftTopic)
+                                    .setValueSerializationSchema(new DriftSignalSerializationSchema())
+                                    .build()
+                    ).build();
+            driftSignals.sinkTo(driftSink).name("Kafka Drift Sink: " + driftTopic);
+        }
 
         // ── Optional Iceberg sink ────────────────────────────────────────────
         if (Boolean.parseBoolean(env("ICEBERG_ENABLED", "false"))) {
